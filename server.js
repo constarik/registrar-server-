@@ -316,10 +316,12 @@ function paddlaTick(state, bumperTarget) {
     b.ticksSinceCountdown++;
     b.x = fpRound(b.x + b.dx); b.y = fpRound(b.y + b.dy);
     const R = PADDLA.BALL_R, F = PADDLA.FIELD;
-    if (b.x - R < 0) { b.x = R; b.dx = -b.dx; randomizeBounce(b, state.rng); }
-    if (b.x + R > F) { b.x = F - R; b.dx = -b.dx; randomizeBounce(b, state.rng); }
-    if (b.y - R < 0) { b.y = R; b.dy = -b.dy; randomizeBounce(b, state.rng); }
-    if (b.y + R > F) { b.y = F - R; b.dy = -b.dy; randomizeBounce(b, state.rng); }
+    let hitWall = false;
+    if (b.x - R < 0) { b.x = R; b.dx = -b.dx; hitWall = true; }
+    if (b.x + R > F) { b.x = F - R; b.dx = -b.dx; hitWall = true; }
+    if (b.y - R < 0) { b.y = R; b.dy = -b.dy; hitWall = true; }
+    if (b.y + R > F) { b.y = F - R; b.dy = -b.dy; hitWall = true; }
+    if (b.alive && hitWall) randomizeBounce(b, state.rng);
     if (b.type === 'normal' && b.ticksSinceCountdown >= PADDLA.COUNTDOWN && b.value > 0) {
       b.value--; b.ticksSinceCountdown = 0;
       if (b.value <= 0) { b.alive = false; b.diedFromTimeout = true; }
