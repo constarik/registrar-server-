@@ -1,5 +1,5 @@
 /**
- * REGISTRAR SERVER — Uncloned Math
+ * REGISTRAR SERVER v2.0.0 — Uncloned Math — UVS 1.0
  * 
  * Roles:
  *   1. Issues session seeds (regSeed → WASM → finalSeed)
