@@ -90,7 +90,7 @@ setInterval(cleanSessions, 10_000);
 // API
 // ============================================================
 
-const UVS_SUPPORTED_VERSIONS = [10]; // integer versions; exclude broken ones explicitly
+const UVS_SUPPORTED_VERSIONS = [1]; // integer versions; exclude broken ones explicitly
 
 function negotiateVersion(clientVersions) {
   if (!Array.isArray(clientVersions)) return null;
