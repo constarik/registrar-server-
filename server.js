@@ -203,7 +203,7 @@ app.get('/debug/:regSeed/:gameSeed', (req, res) => {
 const REGISTRAR_VERSION = '2.0.1';
 
 app.get('/version', (req, res) => {
-  res.json({ version: REGISTRAR_VERSION, uvsVersion: '1.0', engine: 'ChaCha20+SHA512' });
+  res.json({ version: REGISTRAR_VERSION, uvsVersion: 1, engine: 'ChaCha20+SHA512' });
 });
 
 app.get('/status', (req, res) => {
