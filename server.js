@@ -453,9 +453,9 @@ function paddlaTick(state, bumperTarget) {
   if (state.ballsSpawned >= state.numBalls && state.balls.length === 0) state.finished = true;
 }
 
-// POST /verify/paddla — Full game verification
+// POST /verify/paddla — Full game verification with diagnostic event log
 app.post('/verify/paddla', (req, res) => {
-  const { regSeed, gameSeed, inputLog, clientTotalWin, numBalls, betPerBall } = req.body;
+  const { regSeed, gameSeed, inputLog, eventLog, clientTotalWin, numBalls, betPerBall } = req.body;
   
   if (!regSeed || gameSeed === undefined || !inputLog || !numBalls) {
     return res.status(400).json({ error: 'Missing required fields' });
@@ -465,29 +465,50 @@ app.post('/verify/paddla', (req, res) => {
   const wasmResult = runSpec(regSeed >>> 0, gameSeed >>> 0);
   const serverSeed = wasmResult.toString(16).padStart(64, '0');
   
-  // Replay game
+  // Replay game with event log tracking
   const state = createPaddlaState(serverSeed, numBalls, betPerBall || 5);
   let tickIdx = 0;
-  
+  let firstMismatch = null;
+  const clientLogByTick = {};
+  if (Array.isArray(eventLog)) {
+    for (const entry of eventLog) clientLogByTick[entry.tick] = entry;
+  }
+
   while (!state.finished && tickIdx < 200000) {
     const entry = inputLog[tickIdx];
     const target = entry?.target || null;
     paddlaTick(state, target);
     tickIdx++;
+
+    // Diagnostic: compare stateHash on event ticks
+    if (!firstMismatch && clientLogByTick[state.tickCount]) {
+      const clientEntry = clientLogByTick[state.tickCount];
+      const stateSnap = { totalWin: state.totalWin, progressive: state.progressive, ballsSpawned: state.ballsSpawned, ballsOnField: state.balls.length };
+      const serverHash = require('crypto').createHash('sha256').update(JSON.stringify(stateSnap)).digest('hex');
+      if (serverHash !== clientEntry.stateHash) {
+        firstMismatch = {
+          tick: state.tickCount,
+          event: clientEntry.events?.[0] || 'unknown',
+          clientHash: clientEntry.stateHash,
+          serverHash
+        };
+      }
+    }
   }
   
   const serverWin = state.totalWin;
   const clientWin = parseFloat(clientTotalWin) || 0;
   const ok = Math.abs(serverWin - clientWin) < 0.01;
   
-  console.log(`[PADDLA] Verify | server=${serverWin} client=${clientWin} → ${ok ? 'MATCH' : 'MISMATCH'}`);
+  console.log(`[PADDLA] Verify | server=${serverWin} client=${clientWin} → ${ok ? 'MATCH' : 'MISMATCH'}${firstMismatch ? ` | first divergence tick ${firstMismatch.tick}` : ''}`);
   
   res.json({
     ok,
     serverTotalWin: serverWin,
     clientTotalWin: clientWin,
     ticks: state.tickCount,
-    ballsProcessed: state.ballsSpawned
+    ballsProcessed: state.ballsSpawned,
+    firstMismatch: firstMismatch || undefined
   });
 });
 
