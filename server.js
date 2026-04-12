@@ -90,36 +90,27 @@ setInterval(cleanSessions, 10_000);
 // API
 // ============================================================
 
-const UVS_MIN_VERSION = '1.0';
-const UVS_MAX_VERSION = '1.0';
+const UVS_SUPPORTED_VERSIONS = [10]; // integer versions; exclude broken ones explicitly
 
-function compareVersion(a, b) {
-  const [aMaj, aMin] = a.split('.').map(Number);
-  const [bMaj, bMin] = b.split('.').map(Number);
-  return aMaj !== bMaj ? aMaj - bMaj : aMin - bMin;
-}
-
-function negotiateVersion(clientMin, clientMax) {
-  // intersection = [max(clientMin, serverMin) .. min(clientMax, serverMax)]
-  const intMin = compareVersion(clientMin, UVS_MIN_VERSION) > 0 ? clientMin : UVS_MIN_VERSION;
-  const intMax = compareVersion(clientMax, UVS_MAX_VERSION) < 0 ? clientMax : UVS_MAX_VERSION;
-  if (compareVersion(intMin, intMax) > 0) return null; // empty intersection
-  return intMax; // highest in intersection
+function negotiateVersion(clientVersions) {
+  if (!Array.isArray(clientVersions)) return null;
+  const intersection = clientVersions.filter(v => UVS_SUPPORTED_VERSIONS.includes(v));
+  if (!intersection.length) return null;
+  return Math.max(...intersection);
 }
 
 // POST /session/new
 // Client requests a new session — Registrar issues a seed with UVS version negotiation
 app.post('/session/new', (req, res) => {
-  const { gameSeed, minVersion = '1.0', maxVersion = '1.0' } = req.body;
+  const { gameSeed, versions = [10] } = req.body;
   if (gameSeed === undefined) return res.status(400).json({ error: 'gameSeed required' });
 
-  // UVS version negotiation
-  const negotiated = negotiateVersion(minVersion, maxVersion);
+  // UVS version negotiation (integer sets)
+  const negotiated = negotiateVersion(versions);
   if (!negotiated) {
     return res.json({
       accepted: false,
-      serverMin: UVS_MIN_VERSION,
-      serverMax: UVS_MAX_VERSION
+      serverVersions: UVS_SUPPORTED_VERSIONS
     });
   }
 
@@ -139,8 +130,7 @@ app.post('/session/new', (req, res) => {
   res.json({
     accepted: true,
     negotiated,
-    serverMin: UVS_MIN_VERSION,
-    serverMax: UVS_MAX_VERSION,
+    serverVersions: UVS_SUPPORTED_VERSIONS,
     sessionId,
     regSeed,
     expiresIn: SESSION_TTL / 1000,
