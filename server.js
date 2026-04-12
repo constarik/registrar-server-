@@ -90,11 +90,38 @@ setInterval(cleanSessions, 10_000);
 // API
 // ============================================================
 
+const UVS_MIN_VERSION = '1.0';
+const UVS_MAX_VERSION = '1.0';
+
+function compareVersion(a, b) {
+  const [aMaj, aMin] = a.split('.').map(Number);
+  const [bMaj, bMin] = b.split('.').map(Number);
+  return aMaj !== bMaj ? aMaj - bMaj : aMin - bMin;
+}
+
+function negotiateVersion(clientMin, clientMax) {
+  // intersection = [max(clientMin, serverMin) .. min(clientMax, serverMax)]
+  const intMin = compareVersion(clientMin, UVS_MIN_VERSION) > 0 ? clientMin : UVS_MIN_VERSION;
+  const intMax = compareVersion(clientMax, UVS_MAX_VERSION) < 0 ? clientMax : UVS_MAX_VERSION;
+  if (compareVersion(intMin, intMax) > 0) return null; // empty intersection
+  return intMax; // highest in intersection
+}
+
 // POST /session/new
-// Client requests a new session — Registrar issues a seed
+// Client requests a new session — Registrar issues a seed with UVS version negotiation
 app.post('/session/new', (req, res) => {
-  const { gameSeed } = req.body;
+  const { gameSeed, minVersion = '1.0', maxVersion = '1.0' } = req.body;
   if (gameSeed === undefined) return res.status(400).json({ error: 'gameSeed required' });
+
+  // UVS version negotiation
+  const negotiated = negotiateVersion(minVersion, maxVersion);
+  if (!negotiated) {
+    return res.json({
+      accepted: false,
+      serverMin: UVS_MIN_VERSION,
+      serverMax: UVS_MAX_VERSION
+    });
+  }
 
   const sessionId  = crypto.randomBytes(8).toString('hex');
   const regSeed    = crypto.randomInt(0x100000, 0xFFFFFFFF);
@@ -102,15 +129,20 @@ app.post('/session/new', (req, res) => {
   sessions.set(sessionId, {
     regSeed,
     gameSeed: gameSeed >>> 0,
+    uvsVersion: negotiated,
     created: Date.now(),
     verified: false,
   });
 
-  console.log(`[${sessionId}] New session | regSeed=0x${regSeed.toString(16).toUpperCase()} | gameSeed=${gameSeed}`);
+  console.log(`[${sessionId}] New session | UVS ${negotiated} | regSeed=0x${regSeed.toString(16).toUpperCase()} | gameSeed=${gameSeed}`);
 
   res.json({
+    accepted: true,
+    negotiated,
+    serverMin: UVS_MIN_VERSION,
+    serverMax: UVS_MAX_VERSION,
     sessionId,
-    regSeed,             // client uses this to generate Wasm binary
+    regSeed,
     expiresIn: SESSION_TTL / 1000,
   });
 });
