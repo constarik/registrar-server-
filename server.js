@@ -1,5 +1,5 @@
 /**
- * REGISTRAR SERVER v2.0.1 — Uncloned Math — UVS 1.0
+ * REGISTRAR SERVER v2.1.1 — Uncloned Math — UVS 1.0
  * 
  * Roles:
  *   1. Issues session seeds (regSeed → WASM → finalSeed)
@@ -201,7 +201,7 @@ app.get('/debug/:regSeed/:gameSeed', (req, res) => {
 });
 
 
-const REGISTRAR_VERSION = '2.1.0';
+const REGISTRAR_VERSION = '2.1.1';
 
 app.get('/version', (req, res) => {
   res.json({ version: REGISTRAR_VERSION, uvsVersion: 1, engine: 'ChaCha20+SHA512' });
