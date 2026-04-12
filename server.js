@@ -198,20 +198,41 @@ function moneyRound(v) { return Math.round(v * 100) / 100; }
 function dist(ax, ay, bx, by) { return Math.sqrt((bx-ax)**2 + (by-ay)**2); }
 function clamp(v, min, max) { return Math.max(min, Math.min(max, v)); }
 
-// Input-seeded RNG (same as client)
-function hmacSha256(key, msg) {
-  return crypto.createHmac('sha256', key).update(msg).digest();
-}
-function bytesToDouble(bytes) {
-  const high = bytes.readUInt32BE(0) >>> 0;
-  const low = bytes.readUInt32BE(4) >>> 0;
-  return (high * 0x100000000 + low) / 0x10000000000000000;
+// ===== UVS 1.0 PRNG (ChaCha20 + SHA-512, matches client Engine v9) =====
+function sha512Hex(msg) {
+  return crypto.createHash('sha512').update(msg).digest('hex');
 }
 
-class InputSeededRNG {
-  constructor(gameSeedHex) { this.gameSeedHex = gameSeedHex; this.currentTick = -1; this.bumperX = 0; this.bumperY = 0; this.counter = 0; }
-  setTickContext(tick, bumperX, bumperY) { if (this.currentTick !== tick || this.bumperX !== bumperX || this.bumperY !== bumperY) { this.currentTick = tick; this.bumperX = bumperX; this.bumperY = bumperY; this.counter = 0; } }
-  nextDouble(eventType = 'rnd') { const input = `${this.currentTick}:${this.bumperX.toFixed(4)}:${this.bumperY.toFixed(4)}:${eventType}:${this.counter++}`; const hash = hmacSha256(this.gameSeedHex, input); return bytesToDouble(hash); }
+class UVS_PRNG {
+  constructor(combinedSeedHex) {
+    const buf = Buffer.from(combinedSeedHex, 'hex');
+    const key   = buf.slice(0, 32);
+    const nonce = buf.slice(32, 44);
+    const iv = Buffer.alloc(16);
+    iv.writeUInt32LE(0, 0);
+    nonce.copy(iv, 4);
+    const zeros = Buffer.alloc(256);
+    const cipher = crypto.createCipheriv('chacha20', key, iv);
+    this._stream = cipher.update(zeros);
+    this._pos = 0;
+    this._log = [];
+  }
+  nextUint32() {
+    const val = this._stream.readUInt32LE(this._pos);
+    this._pos += 4;
+    this._log.push(val);
+    return val;
+  }
+  nextDouble() {
+    const hi = this.nextUint32();
+    const lo = this.nextUint32();
+    return (hi * 0x100000000 + lo) / 0x10000000000000000;
+  }
+  consumed() { return [...this._log]; }
+}
+
+function tickCombinedSeed(serverSeed, bumperX, bumperY, tick) {
+  return sha512Hex(`${serverSeed}:${bumperX.toFixed(4)}:${bumperY.toFixed(4)}:${tick}`);
 }
 
 // PADDLA Config (must match client exactly)
@@ -237,17 +258,17 @@ function moveBumper(bumper) {
 }
 
 function createBall(rng, id) {
-  const x = 0.5 + rng.nextDouble('spawn_x') * 8, y = PADDLA.FIELD - 0.3;
-  const angle = (220 + rng.nextDouble('spawn_angle') * 100) * Math.PI / 180;
-  const typeRoll = rng.nextDouble('spawn_type');
+  const x = 0.5 + rng.nextDouble() * 8, y = PADDLA.FIELD - 0.3;
+  const angle = (220 + rng.nextDouble() * 100) * Math.PI / 180;
+  const typeRoll = rng.nextDouble();
   let type = 'normal', multiplier = 1;
   if (typeRoll < PADDLA.GOLDEN_CHANCE) { type = 'golden'; multiplier = 3; }
   else if (typeRoll < PADDLA.GOLDEN_CHANCE + PADDLA.EXPLOSIVE_CHANCE) { type = 'explosive'; }
   return { id, x, y, dx: Math.cos(angle) * PADDLA.SPEED, dy: Math.sin(angle) * PADDLA.SPEED, value: 9, ticksSinceCountdown: 0, alive: true, type, multiplier };
 }
 
-function randomizeBounce(ball, rng, eventType) {
-  const variation = (rng.nextDouble(eventType) - 0.5) * 0.1 * Math.PI;
+function randomizeBounce(ball, rng) {
+  const variation = (rng.nextDouble() - 0.5) * 0.1 * Math.PI;
   const angle = Math.atan2(ball.dy, ball.dx) + variation;
   const speed = Math.sqrt(ball.dx**2 + ball.dy**2);
   ball.dx = fpRound(Math.cos(angle) * speed);
@@ -260,14 +281,14 @@ function collideBallBumper(ball, bumper, rng) {
     const nx = (ball.x - bumper.x)/d, ny = (ball.y - bumper.y)/d, dot = ball.dx*nx + ball.dy*ny;
     ball.dx = fpRound(ball.dx - 2*dot*nx); ball.dy = fpRound(ball.dy - 2*dot*ny);
     ball.x = fpRound(bumper.x + nx*minDist); ball.y = fpRound(bumper.y + ny*minDist);
-    randomizeBounce(ball, rng, `bumper_${ball.id}`);
+    randomizeBounce(ball, rng);
     return true;
   }
   return false;
 }
 
-function createPaddlaState(gameSeedHex, numBalls, betPerBall) {
-  return { rng: new InputSeededRNG(gameSeedHex), gameSeedHex, balls: [], bumper: createBumper(), tickCount: 0, ballsSpawned: 0, numBalls, betPerBall, spawnCooldown: 0, progressive: 1, timeoutCount: 0, totalWin: 0, finished: false, nextBallId: 1 };
+function createPaddlaState(serverSeed, numBalls, betPerBall) {
+  return { serverSeed, rng: null, balls: [], bumper: createBumper(), tickCount: 0, ballsSpawned: 0, numBalls, betPerBall, spawnCooldown: 0, progressive: 1, timeoutCount: 0, totalWin: 0, finished: false, nextBallId: 1 };
 }
 
 function paddlaTick(state, bumperTarget) {
@@ -280,7 +301,7 @@ function paddlaTick(state, bumperTarget) {
     state.bumper.targetY = clamp(bumperTarget.y, PADDLA.BUMPER.MIN_Y, PADDLA.BUMPER.MAX_Y);
   }
   moveBumper(state.bumper);
-  state.rng.setTickContext(state.tickCount, state.bumper.x, state.bumper.y);
+  state.rng = new UVS_PRNG(tickCombinedSeed(state.serverSeed, state.bumper.x, state.bumper.y, state.tickCount));
   
   // Spawn
   if (state.tickCount % PADDLA.SPAWN_INTERVAL === 0 && state.balls.length < PADDLA.MAX_ON_FIELD && state.spawnCooldown <= 0 && state.ballsSpawned < state.numBalls) {
@@ -295,10 +316,10 @@ function paddlaTick(state, bumperTarget) {
     b.ticksSinceCountdown++;
     b.x = fpRound(b.x + b.dx); b.y = fpRound(b.y + b.dy);
     const R = PADDLA.BALL_R, F = PADDLA.FIELD;
-    if (b.x - R < 0) { b.x = R; b.dx = -b.dx; randomizeBounce(b, state.rng, `wall_${b.id}`); }
-    if (b.x + R > F) { b.x = F - R; b.dx = -b.dx; randomizeBounce(b, state.rng, `wall_${b.id}`); }
-    if (b.y - R < 0) { b.y = R; b.dy = -b.dy; randomizeBounce(b, state.rng, `wall_${b.id}`); }
-    if (b.y + R > F) { b.y = F - R; b.dy = -b.dy; randomizeBounce(b, state.rng, `wall_${b.id}`); }
+    if (b.x - R < 0) { b.x = R; b.dx = -b.dx; randomizeBounce(b, state.rng); }
+    if (b.x + R > F) { b.x = F - R; b.dx = -b.dx; randomizeBounce(b, state.rng); }
+    if (b.y - R < 0) { b.y = R; b.dy = -b.dy; randomizeBounce(b, state.rng); }
+    if (b.y + R > F) { b.y = F - R; b.dy = -b.dy; randomizeBounce(b, state.rng); }
     if (b.type === 'normal' && b.ticksSinceCountdown >= PADDLA.COUNTDOWN && b.value > 0) {
       b.value--; b.ticksSinceCountdown = 0;
       if (b.value <= 0) { b.alive = false; b.diedFromTimeout = true; }
@@ -312,7 +333,7 @@ function paddlaTick(state, bumperTarget) {
   for (const b of state.balls) {
     if (b.alive && isInCenter(b)) {
       const dx = b.x - PADDLA.CENTER_X, dy = b.y - PADDLA.CENTER_Y, d = Math.sqrt(dx*dx+dy*dy);
-      if (d > 0) { b.dx = (dx/d)*PADDLA.SPEED; b.dy = (dy/d)*PADDLA.SPEED; randomizeBounce(b, state.rng, `center_${b.id}`); }
+      if (d > 0) { b.dx = (dx/d)*PADDLA.SPEED; b.dy = (dy/d)*PADDLA.SPEED; randomizeBounce(b, state.rng); }
       if (b.type === 'normal' && b.value < 9) { b.value = 9; b.ticksSinceCountdown = 0; }
     }
   }
@@ -352,7 +373,7 @@ function paddlaTick(state, bumperTarget) {
           const dx = b2.x - b1.x, dy = b2.y - b1.y, d = Math.sqrt(dx*dx+dy*dy)||1, nx = dx/d, ny = dy/d, ov = PADDLA.BALL_R*2-d;
           if (ov > 0) { b1.x -= nx*ov*0.5; b1.y -= ny*ov*0.5; b2.x += nx*ov*0.5; b2.y += ny*ov*0.5; }
           b1.dx = -nx*PADDLA.SPEED; b1.dy = -ny*PADDLA.SPEED; b2.dx = nx*PADDLA.SPEED; b2.dy = ny*PADDLA.SPEED;
-          randomizeBounce(b1, state.rng, `coll_${b1.id}_${b2.id}_1`); randomizeBounce(b2, state.rng, `coll_${b1.id}_${b2.id}_2`);
+          randomizeBounce(b1, state.rng); randomizeBounce(b2, state.rng);
           continue;
         }
         if (s1) { b2.alive = false; state.totalWin = moneyRound(state.totalWin + betScale); continue; }
@@ -360,7 +381,7 @@ function paddlaTick(state, bumperTarget) {
         if (b1.value === b2.value) {
           const prize = moneyRound(b1.value * 2 * betScale);
           state.totalWin = moneyRound(state.totalWin + prize);
-          const roll = state.rng.nextDouble(`double_${b1.id}_${b2.id}`);
+          const roll = state.rng.nextDouble();
           if (roll < 0.5) b2.alive = false; else b1.alive = false;
         } else {
           state.totalWin = moneyRound(state.totalWin + betScale);
@@ -368,7 +389,7 @@ function paddlaTick(state, bumperTarget) {
           loser.alive = false;
           const dx = winner.x - loser.x, dy = winner.y - loser.y, d = Math.sqrt(dx*dx+dy*dy)||1;
           winner.dx = (dx/d)*PADDLA.SPEED; winner.dy = (dy/d)*PADDLA.SPEED;
-          randomizeBounce(winner, state.rng, `win_${winner.id}`);
+          randomizeBounce(winner, state.rng);
         }
       }
     }
@@ -409,12 +430,12 @@ app.post('/verify/paddla', (req, res) => {
     return res.status(400).json({ error: 'Missing required fields' });
   }
   
-  // Compute gameSeedHex from WASM result
+  // Compute serverSeed from WASM result (UVS 1.0: padStart 64 to match client)
   const wasmResult = runSpec(regSeed >>> 0, gameSeed >>> 0);
-  const gameSeedHex = wasmResult.toString(16).padStart(8, '0');
+  const serverSeed = wasmResult.toString(16).padStart(64, '0');
   
   // Replay game
-  const state = createPaddlaState(gameSeedHex, numBalls, betPerBall || 5);
+  const state = createPaddlaState(serverSeed, numBalls, betPerBall || 5);
   let tickIdx = 0;
   
   while (!state.finished && tickIdx < 200000) {
