@@ -201,7 +201,7 @@ app.get('/debug/:regSeed/:gameSeed', (req, res) => {
 });
 
 
-const REGISTRAR_VERSION = '2.1.1';
+const REGISTRAR_VERSION = '2.1.2';
 
 app.get('/version', (req, res) => {
   res.json({ version: REGISTRAR_VERSION, uvsVersion: 1, engine: 'ChaCha20+SHA512' });
