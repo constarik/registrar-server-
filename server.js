@@ -14,7 +14,8 @@ const { createInitialState, tick: engineTick, sha256Hex } = require('paddla-engi
 
 const app  = express();
 app.use(cors());
-app.use(express.json({ limit: '5mb' })); // inputLog can be large
+app.use(express.json({ limit: '5mb' }));
+app.use(express.static(__dirname));
 
 // ============================================================
 // LCG — same as client (this is the "certified engine")

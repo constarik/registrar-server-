@@ -1,0 +1,539 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>PADDLA Mobile</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🏓</text></svg>">
+  <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;700;900&display=swap" rel="stylesheet">
+  <script async src="https://www.googletagmanager.com/gtag/js?id=G-TRP1QX4878"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date()); gtag('config', 'G-TRP1QX4878');
+  </script>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    html, body {
+      overflow: hidden; height: 100%; width: 100%;
+      touch-action: manipulation; user-select: none;
+      background: linear-gradient(135deg, #0a0a1a 0%, #1a1a3e 50%, #0d1b2a 100%);
+      font-family: 'Orbitron', sans-serif; color: white;
+    }
+    #app {
+      display: flex; flex-direction: column; align-items: center;
+      min-height: 100%; padding: 6px 4px 8px;
+      gap: 4px; justify-content: flex-start;
+    }
+    /* ── Header ── */
+    #header {
+      display: flex; align-items: center; justify-content: space-between;
+      width: 100%; padding: 0 8px;
+    }
+    #title {
+      font-size: 1.2rem; font-weight: 900; letter-spacing: 3px;
+      color: #00d4ff; text-shadow: 0 0 20px rgba(0,212,255,0.8);
+    }
+    #pfBadge {
+      background: rgba(0,255,100,0.2); border: 1px solid #00cc55;
+      padding: 3px 8px; border-radius: 10px; font-size: 8px; color: #00cc55;
+      letter-spacing: 0.5px;
+    }
+    /* ── Stats ── */
+    #stats {
+      display: flex; gap: 12px; align-items: center;
+      background: rgba(0,0,0,0.4); padding: 6px 16px; border-radius: 12px;
+      border: 1px solid rgba(0,212,255,0.2); width: 100%;
+      justify-content: space-around;
+    }
+    .stat { text-align: center; }
+    .stat-value { font-size: 18px; font-weight: bold; color: #00d4ff; }
+    .stat-label { font-size: 8px; color: rgba(255,255,255,0.7); letter-spacing: 1px; }
+    .indicators { display: flex; flex-direction: column; gap: 4px; align-items: center; }
+    .ind-row { display: flex; gap: 4px; }
+    .lamp {
+      width: 16px; height: 16px; border-radius: 50%;
+      background: #222; border: 2px solid #444;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 6px; font-weight: bold; color: #555; transition: all 0.3s;
+    }
+    .lamp.active {
+      background: radial-gradient(circle at 30% 30%, #ffff00, #ff8800);
+      border-color: #ffcc00; color: #000;
+      box-shadow: 0 0 10px #ffcc00;
+    }
+    .tdot {
+      width: 12px; height: 12px; border-radius: 50%;
+      background: #222; border: 2px solid #444; transition: all 0.3s;
+    }
+    .tdot.active {
+      background: radial-gradient(circle at 30% 30%, #ff6666, #ff0000);
+      border-color: #ff4444; box-shadow: 0 0 8px #ff0000;
+    }
+    /* ── Canvas ── */
+    #canvasWrap { position: relative; display: flex; align-items: center; justify-content: center; width: 100%; flex-shrink: 0; }
+    canvas {
+      border: 2px solid #00d4ff; border-radius: 12px;
+      box-shadow: 0 0 30px rgba(0,212,255,0.4);
+      touch-action: none;
+    }
+    /* ── Controls ── */
+    #controls {
+      display: flex; gap: 6px; align-items: center;
+      width: 100%; justify-content: center; flex-wrap: wrap;
+      padding: 2px 4px;
+    }
+    #controls select {
+      padding: 7px 8px; border-radius: 8px;
+      border: 2px solid #00d4ff; background: rgba(0,0,0,0.5);
+      color: #00d4ff; font-size: 11px; font-weight: bold;
+      font-family: 'Orbitron', sans-serif;
+    }
+    #controls select option { background: #1a1a2e; }
+    #playBtn {
+      padding: 9px 20px; font-size: 13px; font-weight: bold;
+      background: linear-gradient(180deg, #00d4ff 0%, #0099cc 100%);
+      color: #000; border: none; border-radius: 10px; cursor: pointer;
+      font-family: 'Orbitron', sans-serif; letter-spacing: 1px;
+      box-shadow: 0 0 15px rgba(0,212,255,0.5);
+    }
+    #playBtn:disabled { background: #666; cursor: not-allowed; box-shadow: none; }
+    /* ── Result overlay ── */
+    #result {
+      display: none; position: fixed; top: 50%; left: 50%;
+      transform: translate(-50%, -50%);
+      background: rgba(10,10,30,0.98); padding: 24px 32px;
+      border-radius: 18px; text-align: center; z-index: 50;
+      border: 3px solid #00d4ff; min-width: 280px; max-width: 90vw;
+      box-shadow: 0 0 40px rgba(0,212,255,0.4);
+    }
+    #result.show { display: block; }
+    #result h2 { color: #00d4ff; font-size: 16px; letter-spacing: 3px; }
+    #result .amount { font-size: 40px; color: #00cc55; margin: 10px 0; }
+    #result .rtp { font-size: 11px; color: rgba(255,255,255,0.6); margin-bottom: 12px; }
+    .verify-section { margin-top: 10px; padding-top: 10px; border-top: 1px solid #333; font-size: 9px; text-align: left; color: rgba(255,255,255,0.5); }
+    .verify-section code { display: block; background: rgba(0,0,0,0.5); padding: 3px; border-radius: 4px; margin: 3px 0; word-break: break-all; font-family: monospace; font-size: 8px; }
+    .rbtn {
+      padding: 8px 18px; font-size: 11px; font-weight: bold;
+      border: none; border-radius: 8px; cursor: pointer; margin: 3px;
+      font-family: 'Orbitron', sans-serif;
+    }
+    .rbtn-close { background: #444; color: #fff; }
+    .rbtn-replay { background: #00d4ff; color: #000; }
+  </style>
+</head>
+<body>
+<div id="app">
+  <div id="header">
+    <div id="title">🏓 PADDLA</div>
+    <div id="pfBadge">🔒 UVS v1</div>
+  </div>
+
+  <div id="stats">
+    <div class="stat">
+      <div class="stat-value" id="ballsLeft">0</div>
+      <div class="stat-label">BALLS</div>
+    </div>
+    <div class="stat">
+      <div class="stat-value" id="winDisplay">$0</div>
+      <div class="stat-label">WIN</div>
+    </div>
+    <div class="indicators">
+      <div class="ind-row" id="lamps">
+        <div class="lamp">×1</div><div class="lamp">×2</div><div class="lamp">×3</div><div class="lamp">×4</div><div class="lamp">×5</div>
+      </div>
+      <div class="ind-row" id="tdots">
+        <div class="tdot"></div><div class="tdot"></div><div class="tdot"></div><div class="tdot"></div><div class="tdot"></div>
+      </div>
+    </div>
+    <div class="stat">
+      <div class="stat-value" id="balance">$1000</div>
+      <div class="stat-label">BALANCE</div>
+    </div>
+  </div>
+
+  <div id="canvasWrap">
+    <canvas id="canvas"></canvas>
+  </div>
+
+  <div id="controls">
+    <select id="betSelect">
+      <option value="1">$1</option>
+      <option value="5" selected>$5</option>
+      <option value="10">$10</option>
+      <option value="25">$25</option>
+      <option value="50">$50</option>
+    </select>
+    <select id="ballCount">
+      <option value="50">50 balls</option>
+      <option value="100" selected>100 balls</option>
+      <option value="200">200 balls</option>
+    </select>
+    <button id="playBtn">▶ PLAY</button>
+  </div>
+</div>
+
+<!-- Result -->
+<div id="result">
+  <h2>GAME OVER</h2>
+  <div class="amount" id="resultAmount">$0</div>
+  <div class="rtp" id="finalRtp"></div>
+  <div class="verify-section" id="verifySection" style="display:none">
+    <div>Session: <code id="vGameId"></code></div>
+    <div>WASM: <code id="vServerSeed"></code></div>
+    <div id="verifyLocal" style="margin-top:6px"></div>
+    <div id="verifyServer" style="margin-top:4px"></div>
+  </div>
+  <div style="margin-top:12px">
+    <button class="rbtn rbtn-replay" id="replayBtn">▶ REPLAY</button>
+    <button class="rbtn rbtn-close" id="closeBtn">✕ CLOSE</button>
+  </div>
+</div>
+
+<script src="engine/core.js"></script>
+<script>
+// ── Constants ──────────────────────────────────────────────────────────────
+const VERSION = '9.0.9';
+const MOBILE_VERSION = 1;
+const REGISTRAR_URL = 'https://registrar-server.onrender.com';
+const BET_MULTIPLIER = { human:1, hunter:1, defender:1, humanSim:1, sniper:2, stationary:1 };
+const VALUE_COLORS = { 9:'#00ff00',8:'#33ff00',7:'#66ff00',6:'#99ff00',5:'#ccff00',4:'#ffff00',3:'#ffcc00',2:'#ff9900',1:'#ff6600',0:'#ff0000' };
+
+// ── Canvas sizing ──────────────────────────────────────────────────────────
+const canvas = document.getElementById('canvas');
+const ctx = canvas.getContext('2d');
+
+function resizeCanvas() {
+  const size = Math.min(window.innerWidth - 8, window.innerWidth - 8, 500);
+  canvas.width = size;
+  canvas.height = size;
+}
+resizeCanvas();
+window.addEventListener('resize', () => { resizeCanvas(); });
+
+let SCALE = () => canvas.width / CONFIG.FIELD;
+
+// ── State ──────────────────────────────────────────────────────────────────
+let gameState = null, gameRunning = false, replayRunning = false;
+let mouseX = CONFIG.FIELD/2, mouseY = CONFIG.FIELD/2;
+let registrarOnline = false;
+let currentSessionId = null, currentRegSeed = null, currentGameSeed = null;
+let lastVerificationData = null;
+let balance = 1000;
+let floatingTexts = [], explosionParticles = [];
+let goalFlashLeft = 0, goalFlashRight = 0;
+let replayLog_data = [], replayLog_idx = 0;
+
+// ── Touch controls ──────────────────────────────────────────────────────────
+canvas.addEventListener('touchmove', (e) => {
+  e.preventDefault();
+  const r = canvas.getBoundingClientRect();
+  const sc = SCALE();
+  mouseX = (e.touches[0].clientX - r.left) / sc;
+  mouseY = (e.touches[0].clientY - r.top) / sc;
+}, { passive: false });
+canvas.addEventListener('touchstart', (e) => {
+  e.preventDefault();
+  const r = canvas.getBoundingClientRect();
+  const sc = SCALE();
+  mouseX = (e.touches[0].clientX - r.left) / sc;
+  mouseY = (e.touches[0].clientY - r.top) / sc;
+}, { passive: false });
+
+// ── Registrar check ────────────────────────────────────────────────────────
+async function checkRegistrar() {
+  try {
+    const r = await fetch(REGISTRAR_URL + '/status', { signal: AbortSignal.timeout(5000) });
+    const d = await r.json();
+    registrarOnline = true;
+    const regVersion = d.version || '?';
+    const uvsVersion = d.uvsVersion || 1;
+    document.getElementById('pfBadge').textContent = `🔒 UVS v${uvsVersion} | v${VERSION} | m${MOBILE_VERSION} | reg v${regVersion}`;
+  } catch {
+    registrarOnline = false;
+    document.getElementById('pfBadge').textContent = `🔒 UVS v1 | v${VERSION} | m${MOBILE_VERSION} | reg offline`;
+  }
+}
+checkRegistrar();
+
+// ── WASM / LCG (same as desktop) ──────────────────────────────────────────
+class LCG {
+  constructor(seed) { this.s = seed >>> 0; }
+  next() { this.s = (Math.imul(this.s, 1664525) + 1013904223) >>> 0; return this.s; }
+  range(lo, hi) { return lo + (this.next() % (hi - lo)); }
+}
+const BINARY_OPS = [0x6a,0x6b,0x6c,0x73];
+const SHIFT_OPS  = [0x76,0x77,0x78];
+function uleb128(n) { const o=[]; do { let b=n&0x7f; n>>>=7; if(n) b|=0x80; o.push(b); } while(n); return o; }
+function sleb128(n) { n=n|0; const o=[]; let more=true; while(more) { let b=n&0x7f; n>>=7; if((n===0&&!(b&0x40))||(n===-1&&(b&0x40))) more=false; else b|=0x80; o.push(b); } return o; }
+function buildWasm(regSeed) {
+  const lcg = new LCG(regSeed);
+  const n = lcg.range(4,7);
+  const steps = Array.from({length:n}, () => ({
+    shiftOp: SHIFT_OPS[lcg.range(0,SHIFT_OPS.length)],
+    shiftAmt: 8+lcg.range(0,8),
+    binOp: BINARY_OPS[lcg.range(0,BINARY_OPS.length)],
+    constVal: (lcg.next()|1)|0,
+  }));
+  const body = [0x00,0x20,0x00];
+  for (const s of steps) { body.push(0x41,...sleb128(s.shiftAmt)); body.push(s.shiftOp); body.push(0x41,...sleb128(s.constVal)); body.push(s.binOp); }
+  body.push(0x0b);
+  const typeBody=[0x01,0x60,0x01,0x7f,0x01,0x7f];
+  const typeSec=[0x01,...uleb128(typeBody.length),...typeBody];
+  const funcSec=[0x03,...uleb128([0x01,0x00].length),0x01,0x00];
+  const expName=Array.from('compute').map(c=>c.charCodeAt(0));
+  const expBody=[0x01,...uleb128(expName.length),...expName,0x00,0x00];
+  const expSec=[0x07,...uleb128(expBody.length),...expBody];
+  const bodyWLen=[...uleb128(body.length),...body];
+  const codeBody=[0x01,...bodyWLen];
+  const codeSec=[0x0a,...uleb128(codeBody.length),...codeBody];
+  return { bytes: new Uint8Array([0x00,0x61,0x73,0x6d,0x01,0x00,0x00,0x00,...typeSec,...funcSec,...expSec,...codeSec]) };
+}
+
+function sha256Pure(str) {
+  const textEncoder = new TextEncoder();
+  const data = textEncoder.encode(str);
+  return crypto.subtle.digest('SHA-256', data).then(buf => {
+    return Array.from(new Uint8Array(buf)).map(b=>b.toString(16).padStart(2,'0')).join('');
+  });
+}
+function bytesToHex(buf) { return Array.from(new Uint8Array(buf)).map(b=>b.toString(16).padStart(2,'0')).join(''); }
+
+// ── UI helpers ─────────────────────────────────────────────────────────────
+function updateUI() {
+  if (gameState) {
+    document.getElementById('ballsLeft').textContent = gameState.numBalls - gameState.ballsSpawned + gameState.balls.length;
+    document.getElementById('winDisplay').textContent = '$' + gameState.totalWin;
+    document.querySelectorAll('#lamps .lamp').forEach((l,i) => l.classList.toggle('active', i < gameState.progressive));
+    document.querySelectorAll('#tdots .tdot').forEach((d,i) => d.classList.toggle('active', i < gameState.timeoutCount));
+  }
+  document.getElementById('balance').textContent = '$' + Math.round(balance);
+}
+
+function setDisabled(disabled) {
+  ['playBtn','betSelect','ballCount'].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) { el.disabled = disabled; el.style.opacity = disabled ? '0.4' : '1'; }
+  });
+}
+
+function showFloatingText(x, y, text, color, size=16) {
+  floatingTexts.push({ x: x*SCALE(), y: y*SCALE(), text, color, opacity:1, dy:-2, size });
+}
+function createExplosion(x, y) {
+  for (let i=0;i<20;i++) {
+    const a=Math.random()*Math.PI*2, s=0.05+Math.random()*0.1;
+    explosionParticles.push({ x, y, dx:Math.cos(a)*s, dy:Math.sin(a)*s, life:1, size:0.1+Math.random()*0.15 });
+  }
+}
+function updateEffects() {
+  for (let i=floatingTexts.length-1;i>=0;i--) { floatingTexts[i].y+=floatingTexts[i].dy; floatingTexts[i].opacity-=0.025; if(floatingTexts[i].opacity<=0) floatingTexts.splice(i,1); }
+  for (let i=explosionParticles.length-1;i>=0;i--) { explosionParticles[i].x+=explosionParticles[i].dx; explosionParticles[i].y+=explosionParticles[i].dy; explosionParticles[i].life-=0.03; if(explosionParticles[i].life<=0) explosionParticles.splice(i,1); }
+  goalFlashLeft*=0.9; goalFlashRight*=0.9;
+}
+
+function clamp(v,lo,hi) { return Math.max(lo,Math.min(hi,v)); }
+
+// ── Render ─────────────────────────────────────────────────────────────────
+function render() {
+  const sc = SCALE();
+  ctx.clearRect(0,0,canvas.width,canvas.height);
+  ctx.strokeStyle='rgba(0,212,255,0.15)'; ctx.lineWidth=1;
+  const la=0.3+goalFlashLeft*0.5, ra=0.3+goalFlashRight*0.5;
+  ctx.fillStyle=`rgba(0,255,100,${la})`; ctx.beginPath(); ctx.arc(0,0,CONFIG.GOAL_R*sc,0,Math.PI/2); ctx.lineTo(0,0); ctx.fill();
+  ctx.fillStyle=`rgba(0,255,100,${ra})`; ctx.beginPath(); ctx.arc(canvas.width,0,CONFIG.GOAL_R*sc,Math.PI/2,Math.PI); ctx.lineTo(canvas.width,0); ctx.fill();
+  ctx.strokeStyle='rgba(0,255,100,0.4)'; ctx.lineWidth=2;
+  ctx.beginPath(); ctx.arc(0,0,CONFIG.GOAL_R*sc,0,Math.PI/2); ctx.stroke();
+  ctx.beginPath(); ctx.arc(canvas.width,0,CONFIG.GOAL_R*sc,Math.PI/2,Math.PI); ctx.stroke();
+  ctx.fillStyle='rgba(0,200,255,0.2)'; ctx.beginPath(); ctx.arc(CONFIG.CENTER_X*sc,CONFIG.CENTER_Y*sc,CONFIG.CENTER_R*sc,0,Math.PI*2); ctx.fill();
+  ctx.strokeStyle='rgba(0,212,255,0.3)'; ctx.lineWidth=1; ctx.beginPath(); ctx.arc(CONFIG.CENTER_X*sc,CONFIG.CENTER_Y*sc,CONFIG.CENTER_R*sc,0,Math.PI*2); ctx.stroke();
+  ctx.strokeStyle='rgba(0,212,255,0.15)'; ctx.lineWidth=1; ctx.strokeRect(BUMPER.MIN_X*sc,BUMPER.MIN_Y*sc,(BUMPER.MAX_X-BUMPER.MIN_X)*sc,(BUMPER.MAX_Y-BUMPER.MIN_Y)*sc);
+  for (const p of explosionParticles) { ctx.fillStyle=`rgba(255,${150+Math.random()*100|0},0,${p.life})`; ctx.beginPath(); ctx.arc(p.x*sc,p.y*sc,p.size*sc,0,Math.PI*2); ctx.fill(); }
+  const bx=gameState?gameState.bumper.x:BUMPER.START_X, by=gameState?gameState.bumper.y:BUMPER.START_Y;
+  ctx.fillStyle='rgba(0,212,255,0.3)'; ctx.beginPath(); ctx.arc(bx*sc,by*sc,BUMPER.RADIUS*sc,0,Math.PI*2); ctx.fill();
+  ctx.fillStyle='#00d4ff'; ctx.beginPath(); ctx.arc(bx*sc,by*sc,BUMPER.RADIUS*sc*0.6,0,Math.PI*2); ctx.fill();
+  if (gameState) {
+    for (const b of gameState.balls) {
+      if (!b.alive) continue;
+      let color, glow;
+      if (b.type==='golden') { color='#ffa500'; glow='#ff8c00'; }
+      else if (b.type==='explosive') { color='#ff4444'; glow='#ff0000'; }
+      else { color=VALUE_COLORS[b.value]||'#fff'; glow=color; }
+      ctx.shadowColor=glow; ctx.shadowBlur=12; ctx.fillStyle=color;
+      ctx.beginPath(); ctx.arc(b.x*sc,b.y*sc,CONFIG.BALL_R*sc,0,Math.PI*2); ctx.fill();
+      ctx.shadowBlur=0; ctx.fillStyle=b.type==='explosive'?'#fff':'#000';
+      ctx.font=`bold ${Math.max(8,10*(sc/54))}px Arial`; ctx.textAlign='center'; ctx.textBaseline='middle';
+      if (b.type==='normal') ctx.fillText(b.value,b.x*sc,b.y*sc);
+      else if (b.type==='golden') ctx.fillText('G',b.x*sc,b.y*sc);
+    }
+  }
+  for (const ft of floatingTexts) { ctx.save(); ctx.globalAlpha=ft.opacity; ctx.fillStyle=ft.color; ctx.font=`bold ${ft.size||16}px Arial`; ctx.textAlign='center'; ctx.shadowColor=ft.color; ctx.shadowBlur=10; ctx.fillText(ft.text,ft.x,ft.y); ctx.restore(); }
+}
+
+// ── Game loop ──────────────────────────────────────────────────────────────
+function processEvents(events) {
+  for (const e of events) {
+    if (e.type==='goal') { showFloatingText(e.ball.x,e.ball.y,'+'+e.prize,'#00ff66',20); if(e.side==='left') goalFlashLeft=1; else goalFlashRight=1; }
+    if (e.type==='explosion') { createExplosion(e.x,e.y); }
+    if (e.type==='exploded') { showFloatingText(e.ball.x,e.ball.y,'+'+e.prize,'#ff6600',18); }
+    if (e.type==='double') { showFloatingText((e.b1.x+e.b2.x)/2,(e.b1.y+e.b2.y)/2,'DOUBLE +'+e.prize,'#ffd700',22); }
+    if (e.type==='timeout') { showFloatingText(e.ball.x,e.ball.y,'✗','#ff4444'); }
+    if (e.type==='autoCollect') { showFloatingText(e.ball.x,e.ball.y,'💫 +'+e.prize,'#ffaa00',20); createExplosion(e.ball.x,e.ball.y); }
+    if (e.type==='collision'&&e.prize>1) { showFloatingText(e.loser.x,e.loser.y,'+'+e.prize,'#ffff00'); }
+    if (e.type==='gameEnd') {
+      const bet=gameState.numBalls*gameState.betPerBall, win=gameState.totalWin, rtp=win/bet;
+      document.getElementById('resultAmount').textContent='$'+win;
+      document.getElementById('finalRtp').textContent=`Bet: $${bet} | Win: $${win} | RTP: ${(rtp*100).toFixed(1)}%`;
+      balance=Math.max(0,balance-bet)+win;
+      if (lastVerificationData) { lastVerificationData.clientTotalWin = win; lastVerificationData.numBalls = gameState.numBalls; lastVerificationData.betPerBall = gameState.betPerBall; }
+      updateUI();
+      setTimeout(() => showResult(), 800);
+    }
+  }
+}
+
+function gameLoop() {
+  if (replayRunning && gameState && !gameState.finished) {
+    const entry = replayLog_data[replayLog_idx++];
+    const target = entry ? entry.target : null;
+    const events = tick(gameState, target);
+    processEvents(events);
+    updateUI();
+  }
+  if (gameRunning && gameState && !gameState.finished) {
+    const target = { x: clamp(mouseX, BUMPER.MIN_X, BUMPER.MAX_X), y: clamp(mouseY, BUMPER.MIN_Y, BUMPER.MAX_Y) };
+    const events = tick(gameState, target);
+    processEvents(events);
+    updateUI();
+  }
+  updateEffects();
+  render();
+  requestAnimationFrame(gameLoop);
+}
+requestAnimationFrame(gameLoop);
+
+// ── Show/hide result ───────────────────────────────────────────────────────
+function showResult() {
+  gameRunning = false; replayRunning = false;
+  setDisabled(true);
+  if (registrarOnline && currentSessionId) {
+    document.getElementById('vGameId').textContent = currentSessionId;
+    document.getElementById('vServerSeed').textContent = '0x' + (lastVerificationData?.wasmResult||0).toString(16).toUpperCase().padStart(8,'0');
+    document.getElementById('verifySection').style.display = 'block';
+    verifyLocal();
+    verifyWithRegistrar();
+  }
+  document.getElementById('result').classList.add('show');
+}
+
+// ── Verification ───────────────────────────────────────────────────────────
+async function verifyLocal() {
+  if (!lastVerificationData?.regSeed) return;
+  const vd = lastVerificationData;
+  try {
+    const { bytes } = buildWasm(vd.regSeed);
+    const wasmMod = await WebAssembly.compile(bytes.buffer);
+    const wasmInst = await WebAssembly.instantiate(wasmMod);
+    const localResult = wasmInst.exports.compute(vd.gameSeed) >>> 0;
+    if (localResult === vd.wasmResult) {
+      document.getElementById('verifyLocal').innerHTML = '<span style="color:#00cc55">✓ LOCAL VERIFIED</span>';
+    } else {
+      document.getElementById('verifyLocal').innerHTML = `<span style="color:#ff4444">❌ LOCAL MISMATCH</span>`;
+    }
+  } catch(err) {
+    document.getElementById('verifyLocal').innerHTML = `<span style="color:#ff4444">❌ ${err.message}</span>`;
+  }
+}
+
+async function verifyWithRegistrar() {
+  if (!lastVerificationData) return;
+  const vd = lastVerificationData;
+  try {
+    const res = await fetch(REGISTRAR_URL + '/verify/paddla', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ regSeed: vd.regSeed, gameSeed: vd.gameSeed, inputLog: vd.inputLog, eventLog: vd.eventLog, clientTotalWin: vd.clientTotalWin, numBalls: vd.numBalls, betPerBall: vd.betPerBall, serverSeed: vd.serverSeed })
+    });
+    const data = await res.json();
+    if (data.ok) {
+      document.getElementById('verifyServer').innerHTML = `<span style="color:#00cc55">✓ SERVER VERIFIED $${data.serverTotalWin}</span>`;
+    } else {
+      document.getElementById('verifyServer').innerHTML = `<span style="color:#ff4444">❌ MISMATCH server:$${data.serverTotalWin} client:$${data.clientTotalWin}</span>`;
+    }
+  } catch(err) {
+    document.getElementById('verifyServer').innerHTML = `<span style="color:#ff4444">❌ ${err.message}</span>`;
+  }
+}
+
+// ── Play button ────────────────────────────────────────────────────────────
+document.getElementById('playBtn').addEventListener('click', async () => {
+  const numBalls = parseInt(document.getElementById('ballCount').value) || 100;
+  const betPerBall = parseInt(document.getElementById('betSelect').value) || 5;
+  const bet = numBalls * betPerBall;
+  if (bet > balance) { alert(`Need $${bet}`); return; }
+
+  floatingTexts=[]; explosionParticles=[]; goalFlashLeft=0; goalFlashRight=0;
+  setDisabled(true);
+  document.getElementById('result').classList.remove('show');
+  document.getElementById('verifySection').style.display='none';
+  document.getElementById('verifyLocal').textContent='';
+  document.getElementById('verifyServer').textContent='';
+
+  let serverSeed;
+  if (registrarOnline) {
+    try {
+      const gameSeed = Math.floor(Math.random() * 0xFFFFFFFF);
+      currentGameSeed = gameSeed;
+      const res = await fetch(REGISTRAR_URL + '/session/new', {
+        method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({ gameSeed, versions:[1] })
+      });
+      const data = await res.json();
+      if (!data.accepted) { alert('UVS version mismatch'); setDisabled(false); return; }
+      currentSessionId = data.sessionId;
+      currentRegSeed = data.regSeed;
+      const { bytes } = buildWasm(data.regSeed);
+      const wasmMod = await WebAssembly.compile(bytes.buffer);
+      const wasmInst = await WebAssembly.instantiate(wasmMod);
+      const wasmResult = wasmInst.exports.compute(gameSeed) >>> 0;
+      serverSeed = wasmResult.toString(16).padStart(64,'0');
+      lastVerificationData = { sessionId: data.sessionId, regSeed: data.regSeed, gameSeed, wasmResult, clientTotalWin:0, numBalls, betPerBall, serverSeed, inputLog:[], eventLog:[] };
+    } catch(err) {
+      registrarOnline = false;
+    }
+  }
+  if (!serverSeed) {
+    const hash = await sha256Pure(`fallback:${Date.now()}:${Math.random()}`);
+    serverSeed = hash; currentSessionId = null; currentRegSeed = null;
+  }
+  gameState = createInitialState(serverSeed, numBalls, betPerBall);
+  if (lastVerificationData) {
+    lastVerificationData.inputLog = gameState.inputLog;
+    lastVerificationData.eventLog = gameState.eventLog || [];
+  }
+  gameRunning = true;
+  document.getElementById('playBtn').disabled = true;
+});
+
+// ── Buttons ────────────────────────────────────────────────────────────────
+document.getElementById('closeBtn').addEventListener('click', () => {
+  document.getElementById('result').classList.remove('show');
+  setDisabled(false);
+  gameRunning = false; replayRunning = false;
+});
+
+document.getElementById('replayBtn').addEventListener('click', () => {
+  if (!lastVerificationData?.serverSeed || !lastVerificationData?.inputLog) return;
+  document.getElementById('result').classList.remove('show');
+  floatingTexts=[]; explosionParticles=[]; goalFlashLeft=0; goalFlashRight=0;
+  const vd = lastVerificationData;
+  gameState = createInitialState(vd.serverSeed, vd.numBalls, vd.betPerBall);
+  replayLog_data = vd.inputLog.slice();
+  replayLog_idx = 0;
+  replayRunning = true;
+  setDisabled(true);
+});
+
+document.title = `PADDLA Mobile v${VERSION}`;
+</script>
+</body>
+</html>
