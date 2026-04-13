@@ -16,12 +16,12 @@ const app  = express();
 app.use(cors());
 app.use(express.json({ limit: '5mb' }));
 
-// Mobile detection — serve mobile.html for mobile browsers
+// Mobile detection — redirect to GitHub Pages mobile version
 app.get('/', (req, res) => {
   const ua = req.headers['user-agent'] || '';
   const isMobile = /Android|iPhone|iPad|iPod|Mobile/i.test(ua);
   if (isMobile) {
-    res.sendFile(__dirname + '/mobile.html');
+    res.redirect('https://constarik.github.io/Paddla/mobile.html');
   } else {
     res.status(200).json({ status: 'Registrar API', version: REGISTRAR_VERSION });
   }
