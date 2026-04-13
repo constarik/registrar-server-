@@ -201,7 +201,37 @@ app.get('/debug/:regSeed/:gameSeed', (req, res) => {
 });
 
 
-const REGISTRAR_VERSION = '2.1.2';
+const REGISTRAR_VERSION = '2.1.3';
+
+app.get('/', (req, res) => {
+  res.send(`<!DOCTYPE html>
+<html><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>PADDLA Registrar v${REGISTRAR_VERSION}</title>
+<style>
+  body { margin:0; background:#0a0a1a; color:#fff; font-family:'Courier New',monospace;
+    display:flex; flex-direction:column; align-items:center; justify-content:center; min-height:100vh; gap:20px; }
+  h1 { color:#00d4ff; font-size:1.4rem; letter-spacing:3px; text-shadow:0 0 20px rgba(0,212,255,0.8); }
+  .badge { background:rgba(0,255,100,0.15); border:1px solid #00cc55; padding:6px 16px;
+    border-radius:12px; font-size:11px; color:#00cc55; letter-spacing:1px; }
+  .links { display:flex; gap:16px; flex-wrap:wrap; justify-content:center; }
+  a { padding:12px 28px; border-radius:10px; text-decoration:none; font-weight:bold;
+    font-size:14px; letter-spacing:1px; transition:transform 0.15s; }
+  a:hover { transform:scale(1.05); }
+  .desktop { background:linear-gradient(180deg,#00d4ff,#0099cc); color:#000; }
+  .mobile  { background:linear-gradient(180deg,#00cc55,#007733); color:#000; }
+  .status  { font-size:10px; color:#555; }
+</style></head>
+<body>
+  <h1>🏓 PADDLA</h1>
+  <div class="badge">🔒 UVS v1 | Registrar v${REGISTRAR_VERSION}</div>
+  <div class="links">
+    <a class="desktop" href="https://constarik.github.io/Paddla/">🖥 Desktop</a>
+    <a class="mobile"  href="https://constarik.github.io/Paddla/mobile.html">📱 Mobile</a>
+  </div>
+  <div class="status">registrar.uncloned.work</div>
+</body></html>`);
+});
 
 app.get('/version', (req, res) => {
   res.json({ version: REGISTRAR_VERSION, uvsVersion: 1, engine: 'ChaCha20+SHA512' });
@@ -214,6 +244,10 @@ app.get('/status', (req, res) => {
     activeSessions: sessions.size,
     engines: ['paddla'],
     uptime: process.uptime().toFixed(1) + 's',
+    play: {
+      desktop: 'https://constarik.github.io/Paddla/',
+      mobile:  'https://constarik.github.io/Paddla/mobile.html',
+    },
   });
 });
 
