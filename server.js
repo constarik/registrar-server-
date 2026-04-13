@@ -15,6 +15,18 @@ const { createInitialState, tick: engineTick, sha256Hex } = require('paddla-engi
 const app  = express();
 app.use(cors());
 app.use(express.json({ limit: '5mb' }));
+
+// Mobile detection — serve mobile.html for mobile browsers
+app.get('/', (req, res) => {
+  const ua = req.headers['user-agent'] || '';
+  const isMobile = /Android|iPhone|iPad|iPod|Mobile/i.test(ua);
+  if (isMobile) {
+    res.sendFile(__dirname + '/mobile.html');
+  } else {
+    res.status(200).json({ status: 'Registrar API', version: REGISTRAR_VERSION });
+  }
+});
+
 app.use(express.static(__dirname));
 
 // ============================================================
