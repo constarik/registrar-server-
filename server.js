@@ -1,5 +1,5 @@
 /**
- * REGISTRAR SERVER v2.1.1 — Uncloned Math — UVS 1.0
+ * REGISTRAR SERVER v2.1.5 — Uncloned Math — UVS 1.0
  * 
  * Roles:
  *   1. Issues session seeds (regSeed → WASM → finalSeed)
@@ -116,7 +116,7 @@ function negotiateVersion(clientVersions) {
 // POST /session/new
 // Client requests a new session — Registrar issues a seed with UVS version negotiation
 app.post('/session/new', (req, res) => {
-  const { gameSeed, versions = [10] } = req.body;
+  const { gameSeed, versions = [1] } = req.body;
   if (gameSeed === undefined) return res.status(400).json({ error: 'gameSeed required' });
 
   // UVS version negotiation (integer sets)
@@ -214,7 +214,7 @@ app.get('/debug/:regSeed/:gameSeed', (req, res) => {
 });
 
 
-const REGISTRAR_VERSION = '2.1.4';
+const REGISTRAR_VERSION = '2.1.5';
 
 app.get('/', (req, res) => {
   res.send(`<!DOCTYPE html>
