@@ -214,7 +214,7 @@ app.get('/debug/:regSeed/:gameSeed', (req, res) => {
 });
 
 
-const REGISTRAR_VERSION = '2.1.3';
+const REGISTRAR_VERSION = '2.1.4';
 
 app.get('/', (req, res) => {
   res.send(`<!DOCTYPE html>
@@ -325,6 +325,56 @@ app.post('/verify/paddla', (req, res) => {
     ticks: state.tickCount,
     ballsProcessed: state.ballsSpawned,
     firstMismatch: firstMismatch || undefined
+  });
+});
+
+// POST /simulate/paddla — server-side RTP simulation
+const SIMULATE_MAX_GAMES = 500;
+const SIMULATE_MAX_BALLS = 200;
+
+app.post('/simulate/paddla', (req, res) => {
+  const { strategy = 'stationary', numGames = 100, ballsPerGame = 100 } = req.body;
+
+  // Validation
+  if (numGames < 1 || numGames > SIMULATE_MAX_GAMES)
+    return res.status(400).json({ error: `numGames must be 1–${SIMULATE_MAX_GAMES}` });
+  if (ballsPerGame < 10 || ballsPerGame > SIMULATE_MAX_BALLS)
+    return res.status(400).json({ error: `ballsPerGame must be 10–${SIMULATE_MAX_BALLS}` });
+
+  const betPerBall = 5;
+  const actualBet = ballsPerGame * betPerBall;
+  const t0 = Date.now();
+  let totalWin = 0;
+  const rtps = [];
+
+  for (let g = 0; g < numGames; g++) {
+    const seed = Math.random().toString(16).slice(2).padEnd(64, '0');
+    const state = createInitialState(seed, ballsPerGame, betPerBall);
+    let ticks = 0;
+    while (!state.finished && ticks < 200000) {
+      engineTick(state, null);
+      ticks++;
+    }
+    totalWin += state.totalWin;
+    rtps.push(state.totalWin / actualBet * 100);
+  }
+
+  const avgRtp = totalWin / (numGames * actualBet) * 100;
+  const stdDev = Math.sqrt(rtps.reduce((s, r) => s + (r - avgRtp) ** 2, 0) / rtps.length);
+  const elapsed = ((Date.now() - t0) / 1000).toFixed(2);
+
+  console.log(`[SIM] strategy=${strategy} games=${numGames} balls=${ballsPerGame} rtp=${avgRtp.toFixed(2)}% elapsed=${elapsed}s`);
+
+  res.json({
+    ok: true,
+    strategy,
+    numGames,
+    ballsPerGame,
+    avgRtp: parseFloat(avgRtp.toFixed(2)),
+    stdDev: parseFloat(stdDev.toFixed(2)),
+    min: parseFloat(Math.min(...rtps).toFixed(2)),
+    max: parseFloat(Math.max(...rtps).toFixed(2)),
+    elapsed: parseFloat(elapsed)
   });
 });
 
