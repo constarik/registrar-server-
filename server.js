@@ -455,7 +455,10 @@ class Room {
   }
   startTick() {
     this.tick++; this.dropPower=this.engine.randDrop(); this.pendingMoves.clear();
-    const order=[...this.players.keys()].sort();
+    // Fisher-Yates shuffle via ChaCha20 — deterministic, verifiable
+    const order=[...this.players.keys()];
+    for(let i=order.length-1;i>0;i--){const j=this.engine.rng.nextUint32()%(i+1);[order[i],order[j]]=[order[j],order[i]];}
+    this.tickOrder=order;
     this.broadcast({type:'tick_start',tick:this.tick,dropPower:this.dropPower,order});
     this.moveTimeout=setTimeout(()=>this.resolveTick(),this.MOVE_WINDOW_MS);
   }
@@ -467,7 +470,7 @@ class Room {
     if(this.pendingMoves.size===this.players.size){clearTimeout(this.moveTimeout);this.resolveTick();}
   }
   resolveTick() {
-    const order=[...this.players.keys()].sort();
+    const order=this.tickOrder||[...this.players.keys()];
     const results=[]; let winner=null;
     for(const pid of order){
       const col=this.pendingMoves.has(pid)?this.pendingMoves.get(pid):Math.floor(this.engine.gameRng()*this.engine.COLS);
