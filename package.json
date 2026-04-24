@@ -12,6 +12,7 @@
   "dependencies": {
     "cors": "^2.8.6",
     "express": "^5.2.1",
-    "paddla-engine": "^9.0.8"
+    "paddla-engine": "^9.0.8",
+    "ws": "^8.20.0"
   }
 }
