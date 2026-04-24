@@ -495,7 +495,14 @@ class Room {
       uvs:{serverSeed:this.uvs.serverSeed,serverSeedHash:this.uvs.serverSeedHash,clientSeed:this.uvs.clientSeed,
         nonce:this.uvs.nonce,rngCalls:this.engine.rng.calls,moves:this.uvs.moves,
         verified:sha256n(this.uvs.serverSeed)===this.uvs.serverSeedHash}});
-    setTimeout(()=>{if(rooms.has(this.id)&&this.state==='FINISHED')rooms.delete(this.id);},60000);
+    setTimeout(()=>{if(rooms.has(this.id)&&this.state==='FINISHED')rooms.delete(this.id);},120000);
+  }
+  rematch() {
+    if(this.state!=='FINISHED') return {error:'game_not_finished'};
+    if(this.players.size<2) return {error:'need_2_players'};
+    this.state='LOBBY';this.engine=null;this.uvs=null;this.tick=0;this.pendingMoves.clear();
+    this.broadcastLobby();
+    return this.startGame();
   }
 }
 
@@ -539,6 +546,10 @@ wss.on('connection', (ws) => {
         const r=currentRoom.startGame();if(r.error)ws.send(JSON.stringify({type:'error',error:r.error}));break;
       }
       case 'move':{ if(currentRoom)currentRoom.receiveMove(playerId,msg.col);break; }
+      case 'rematch':{
+        if(!currentRoom){ws.send(JSON.stringify({type:'error',error:'not_in_room'}));break;}
+        const r=currentRoom.rematch();if(r&&r.error)ws.send(JSON.stringify({type:'error',error:r.error}));break;
+      }
       case 'list_rooms':{
         const l=[];for(const[id,r]of rooms)if(r.state==='LOBBY')l.push({id,players:r.players.size,config:r.config});
         ws.send(JSON.stringify({type:'room_list',rooms:l}));break;
