@@ -497,11 +497,18 @@ class Room {
         verified:sha256n(this.uvs.serverSeed)===this.uvs.serverSeedHash}});
     setTimeout(()=>{if(rooms.has(this.id)&&this.state==='FINISHED')rooms.delete(this.id);},120000);
   }
-  rematch() {
+  rematchVote(pid) {
     if(this.state!=='FINISHED') return {error:'game_not_finished'};
-    if(this.players.size<2) return {error:'need_2_players'};
+    if(!this.rematchVotes) this.rematchVotes=new Set();
+    this.rematchVotes.add(pid);
+    this.broadcast({type:'rematch_vote',playerId:pid,name:this.players.get(pid)?.name||pid,ready:this.rematchVotes.size,total:this.players.size,allReady:this.rematchVotes.size===this.players.size});
+    return {ok:true};
+  }
+  rematchStart() {
+    if(this.state!=='FINISHED') return {error:'game_not_finished'};
+    if(!this.rematchVotes||this.rematchVotes.size<this.players.size) return {error:'not_all_ready'};
+    this.rematchVotes=null;
     this.state='LOBBY';this.engine=null;this.uvs=null;this.tick=0;this.pendingMoves.clear();
-    this.broadcastLobby();
     return this.startGame();
   }
 }
@@ -530,13 +537,12 @@ wss.on('connection', (ws) => {
       case 'create_room':{
         const cfg={gridSize:Math.min(Math.max(msg.gridSize||6,4),10),rotate:msg.rotate!==false,maxPlayers:Math.min(Math.max(msg.maxPlayers||4,2),6)};
         const rid=String(++roomCounter);const room=new Room(rid,cfg);rooms.set(rid,room);currentRoom=room;
-        playerId=msg.name||playerId;room.addPlayer(playerId,msg.name||'Player',msg.color||'#f59e0b',ws);
+        room.addPlayer(playerId,msg.name||'Player',msg.color||'#f59e0b',ws);
         ws.send(JSON.stringify({type:'room_created',roomId:rid,playerId}));break;
       }
       case 'join_room':{
         const room=rooms.get(msg.roomId);
         if(!room){ws.send(JSON.stringify({type:'error',error:'room_not_found'}));break;}
-        playerId=msg.name||playerId;
         const r=room.addPlayer(playerId,msg.name||'Player',msg.color||'#38bdf8',ws);
         if(r.error){ws.send(JSON.stringify({type:'error',error:r.error}));break;}
         currentRoom=room;ws.send(JSON.stringify({type:'room_joined',roomId:msg.roomId,playerId}));break;
@@ -546,9 +552,13 @@ wss.on('connection', (ws) => {
         const r=currentRoom.startGame();if(r.error)ws.send(JSON.stringify({type:'error',error:r.error}));break;
       }
       case 'move':{ if(currentRoom)currentRoom.receiveMove(playerId,msg.col);break; }
-      case 'rematch':{
+      case 'rematch_vote':{
         if(!currentRoom){ws.send(JSON.stringify({type:'error',error:'not_in_room'}));break;}
-        const r=currentRoom.rematch();if(r&&r.error)ws.send(JSON.stringify({type:'error',error:r.error}));break;
+        const rv=currentRoom.rematchVote(playerId);if(rv&&rv.error)ws.send(JSON.stringify({type:'error',error:rv.error}));break;
+      }
+      case 'rematch_start':{
+        if(!currentRoom||playerId!==currentRoom.hostId){ws.send(JSON.stringify({type:'error',error:'not_host'}));break;}
+        const rs=currentRoom.rematchStart();if(rs&&rs.error)ws.send(JSON.stringify({type:'error',error:rs.error}));break;
       }
       case 'list_rooms':{
         const l=[];for(const[id,r]of rooms)if(r.state==='LOBBY')l.push({id,players:r.players.size,config:r.config});
