@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<html lang="en"><head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>PADDLA — Verify Game</title>
+<style>
+  body{margin:0;background:#0a0a1a;color:#e8e8f0;font-family:'Courier New',monospace;padding:18px;line-height:1.5}
+  .wrap{max-width:760px;margin:0 auto}
+  h1{color:#00d4ff;font-size:1.3rem;letter-spacing:2px;text-shadow:0 0 16px rgba(0,212,255,.6)}
+  .badge{display:inline-block;background:rgba(0,255,100,.12);border:1px solid #00cc55;color:#00cc55;padding:4px 12px;border-radius:10px;font-size:11px;letter-spacing:1px;margin-left:8px}
+  .row{display:flex;gap:10px;padding:7px 0;border-bottom:1px solid #1a1a2e;flex-wrap:wrap}
+  .k{color:#8a8aa0;min-width:130px}
+  .v{color:#fff;word-break:break-all;flex:1}
+  .ok{color:#00cc55;font-weight:bold}.bad{color:#ff4444;font-weight:bold}
+  .seed{font-size:12px;color:#aab}
+  details{margin-top:14px;border:1px solid #1a1a2e;border-radius:8px;padding:10px}
+  summary{cursor:pointer;color:#00d4ff}
+  pre{white-space:pre-wrap;word-break:break-all;font-size:11px;color:#99a;max-height:280px;overflow:auto;background:#070712;padding:10px;border-radius:6px}
+  a{color:#00d4ff}
+  .note{font-size:12px;color:#667;margin-top:18px}
+  button{background:#11203a;color:#00d4ff;border:1px solid #00d4ff;border-radius:6px;padding:6px 14px;cursor:pointer;font-family:inherit;margin-top:6px}
+</style></head>
+<body><div class="wrap">
+<h1>🏓 PADDLA <span class="badge">🔒 UVS 2.0 · public audit trail</span></h1>
+<div id="out">Loading…</div>
+<div class="note">This page reads the immutable record from the public trail and re-checks the commitment in your browser.
+The full input log is the "recipe": anyone with the PADDLA engine can replay it from these seeds to reproduce the result byte-for-byte.</div>
+</div>
+<script>
+const $ = id => document.getElementById(id);
+function esc(s){return String(s).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));}
+async function sha256hex(str){
+  const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(str));
+  return [...new Uint8Array(buf)].map(b=>b.toString(16).padStart(2,'0')).join('');
+}
+function rowsHTML(r, commitOk){
+  const f = (k,v,cls)=>`<div class="row"><div class="k">${k}</div><div class="v ${cls||''}">${v}</div></div>`;
+  const when = r.ts ? new Date(r.ts).toISOString().replace('T',' ').slice(0,19)+' UTC' : '—';
+  return [
+    f('Protocol', esc(r.protocol)+' · G='+esc(r.granularity)),
+    f('Result (win)', '$'+esc(r.totalWin)),
+    f('Balls', esc(r.numBalls)+' × $'+esc(r.betPerBall)),
+    f('Engine ticks', esc(r.ticks)),
+    f('Played at', when),
+    f('Commitment', commitOk
+        ? '<span class="ok">✓ matches SHA-256(serverSeed)</span><br><span class="seed">'+esc(r.commitment)+'</span>'
+        : '<span class="bad">✗ MISMATCH</span><br><span class="seed">'+esc(r.commitment)+'</span>'),
+    f('serverSeed', '<span class="seed">'+esc(r.serverSeed)+'</span>'),
+    f('regSeed / gameSeed', esc(r.regSeed)+' / '+esc(r.gameSeed)),
+    f('Input samples', esc(Array.isArray(r.inputLog)?r.inputLog.length:0)+' (delta-encoded from '+esc(r.inputLen)+' ticks)')
+  ].join('');
+}
+(async () => {
+  const id = new URLSearchParams(location.search).get('id');
+  if(!id){ $('out').innerHTML = '<span class="bad">No game id. Use ?id=…</span>'; return; }
+  try{
+    const r = await (await fetch('/trail/'+encodeURIComponent(id))).json();
+    if(r.error){ $('out').innerHTML = '<span class="bad">'+esc(r.error)+'</span>'; return; }
+    const commitOk = (await sha256hex(r.serverSeed)) === r.commitment;
+    const raw = JSON.stringify(r, null, 2);
+    $('out').innerHTML = rowsHTML(r, commitOk)
+      + '<details><summary>Show raw record (full input log)</summary>'
+      + '<button onclick="dl()">⬇ Download record.json</button>'
+      + '<pre id="raw">'+esc(raw)+'</pre></details>'
+      + '<div class="row"><div class="k">Game ID</div><div class="v seed">'+esc(id)+'</div></div>';
+    window.dl = () => { const b=new Blob([raw],{type:'application/json'}); const a=document.createElement('a'); a.href=URL.createObjectURL(b); a.download='paddla-'+id.slice(0,12)+'.json'; a.click(); };
+  }catch(e){ $('out').innerHTML = '<span class="bad">Error: '+esc(e.message)+'</span>'; }
+})();
+</script></body></html>
