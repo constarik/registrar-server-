@@ -40,6 +40,7 @@ function rowsHTML(r, commitOk){
     f('Protocol', esc(r.protocol)+' · G='+esc(r.granularity)),
     f('Result (win)', '$'+esc(r.totalWin)),
     f('Balls', esc(r.numBalls)+' × $'+esc(r.betPerBall)),
+    f('Mode', esc(r.mode || '—')),
     f('Engine ticks', esc(r.ticks)),
     f('Played at', when),
     f('Commitment', commitOk

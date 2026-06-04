@@ -258,7 +258,7 @@ app.get('/debug/:regSeed/:gameSeed', (req, res) => {
 });
 
 
-const REGISTRAR_VERSION = '2.2.4';
+const REGISTRAR_VERSION = '2.2.5';
 
 app.get('/', (req, res) => {
   res.send(`<!DOCTYPE html>
@@ -315,7 +315,7 @@ app.get('/status', (req, res) => {
 
 // POST /verify/paddla — Full game verification with diagnostic event log
 app.post('/verify/paddla', (req, res) => {
-  const { regSeed, gameSeed, inputLog, eventLog, clientTotalWin, numBalls, betPerBall } = req.body;
+  const { regSeed, gameSeed, inputLog, eventLog, clientTotalWin, numBalls, betPerBall, mode } = req.body;
   
   if (!regSeed || gameSeed === undefined || !inputLog || !numBalls) {
     return res.status(400).json({ error: 'Missing required fields' });
@@ -380,6 +380,7 @@ app.post('/verify/paddla', (req, res) => {
       commitment: sha256Hex(serverSeed),
       numBalls,
       betPerBall: betPerBall || 5,
+      mode: (typeof mode === 'string' && mode) ? mode : 'human',
       totalWin: serverWin,
       ticks: tickIdx,
       inputLen: Array.isArray(inputLog) ? inputLog.length : 0,
