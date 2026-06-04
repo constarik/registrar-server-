@@ -258,7 +258,7 @@ app.get('/debug/:regSeed/:gameSeed', (req, res) => {
 });
 
 
-const REGISTRAR_VERSION = '2.2.0';
+const REGISTRAR_VERSION = '2.2.1';
 
 app.get('/', (req, res) => {
   res.send(`<!DOCTYPE html>
@@ -364,10 +364,12 @@ app.post('/verify/paddla', (req, res) => {
 
   // ===== UVS 2.0: persist verified game to public audit trail (Firestore) =====
   // "Recipe, not dish": store seeds + delta-compressed inputLog; anyone replays to verify.
+  let trailGameId = null;
   if (ok && trailEnabled && trailDb) {
     const compressed = compressInputLog(inputLog);
     const inputHash = sha256Hex(JSON.stringify(compressed));
     const gameId = sha256Hex(serverSeed + ':' + inputHash);
+    trailGameId = gameId;
     const trailRecord = {
       gameId,
       protocol: 'UVS-2.0',
@@ -394,6 +396,8 @@ app.post('/verify/paddla', (req, res) => {
     clientTotalWin: clientWin,
     ticks: state.tickCount,
     ballsProcessed: state.ballsSpawned,
+    gameId: trailGameId || undefined,
+    trailUrl: trailGameId ? '/trail/' + trailGameId : undefined,
     firstMismatch: firstMismatch || undefined
   });
 });
