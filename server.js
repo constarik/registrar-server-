@@ -1,10 +1,12 @@
 /**
- * REGISTRAR SERVER v2.1.5 — Uncloned Math — UVS 1.0
- * 
+ * REGISTRAR SERVER v2.2.0 — Uncloned Math
+ *   PADDLA: UVS 2.0 (Move Batch, G=ALL) — persistent public audit trail
+ *   NOISORE: UVS 2.0 (Move Sync, G=1)
+ *
  * Roles:
  *   1. Issues session seeds (regSeed → WASM → finalSeed)
  *   2. Verifies WASM computation
- *   3. Verifies PADDLA game results (full engine replay)
+ *   3. Verifies PADDLA game results (full engine replay) + persists verified games to Firestore
  */
 
 const express = require('express');
@@ -14,6 +16,45 @@ const http    = require('http');
 const { WebSocketServer } = require('ws');
 const { NoisoreEngine } = require('./engine-server');
 const { createInitialState, tick: engineTick, sha256Hex } = require('paddla-engine');
+
+// ===== AUDIT TRAIL (Firestore) — UVS 2.0 persistence layer for PADDLA =====
+// Verified PADDLA games are written to public collection `paddla_games`.
+// If Firebase is unavailable, registrar keeps running normally (no crash, no trail).
+let trailDb = null;
+let trailEnabled = false;
+try {
+  const admin = require('firebase-admin');
+  let sa = null;
+  if (process.env.FIREBASE_SERVICE_ACCOUNT) {
+    sa = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
+  } else {
+    try { sa = require('C:\\Users\\const\\Downloads\\Code\\holepuncher-constr-firebase-adminsdk-fbsvc-a5c94b33ee.json'); } catch (e) { sa = null; }
+  }
+  if (!sa) {
+    console.warn('[TRAIL] Disabled: no Firebase credentials (set FIREBASE_SERVICE_ACCOUNT). Registrar runs without persistent trail.');
+  } else {
+    if (!admin.apps.length) admin.initializeApp({ credential: admin.credential.cert(sa) });
+    trailDb = admin.firestore();
+    trailEnabled = true;
+    console.log('[TRAIL] Enabled: writing verified PADDLA games to Firestore collection paddla_games.');
+  }
+} catch (e) {
+  console.warn('[TRAIL] Disabled: firebase-admin unavailable —', e.message);
+}
+
+// Delta-encode inputLog: keep only ticks where bumper target changed (dense -> sparse).
+// Replay re-expands forward. Keeps Firestore docs well under the 1 MB limit.
+function compressInputLog(inputLog) {
+  if (!Array.isArray(inputLog)) return [];
+  const out = [];
+  let last = '∅';
+  for (let i = 0; i < inputLog.length; i++) {
+    const t = inputLog[i] && inputLog[i].target ? inputLog[i].target : null;
+    const key = t ? `${t.x},${t.y}` : '∅';
+    if (key !== last) { out.push({ t: i, target: t }); last = key; }
+  }
+  return out;
+}
 
 const app  = express();
 app.use(cors());
@@ -217,7 +258,7 @@ app.get('/debug/:regSeed/:gameSeed', (req, res) => {
 });
 
 
-const REGISTRAR_VERSION = '2.1.5';
+const REGISTRAR_VERSION = '2.2.0';
 
 app.get('/', (req, res) => {
   res.send(`<!DOCTYPE html>
@@ -250,7 +291,7 @@ app.get('/', (req, res) => {
 });
 
 app.get('/version', (req, res) => {
-  res.json({ version: REGISTRAR_VERSION, uvsVersion: 1, engine: 'ChaCha20+SHA512' });
+  res.json({ version: REGISTRAR_VERSION, uvsVersion: 1, engine: 'ChaCha20+SHA512', paddlaProtocol: 'UVS-2.0 (Move Batch, G=ALL)', trailEnabled });
 });
 
 app.get('/status', (req, res) => {
@@ -320,7 +361,33 @@ app.post('/verify/paddla', (req, res) => {
   const ok = Math.abs(serverWin - clientWin) < 0.01;
   
   console.log(`[PADDLA] Verify | server=${serverWin} client=${clientWin} → ${ok ? 'MATCH' : 'MISMATCH'}${firstMismatch ? ` | first divergence tick ${firstMismatch.tick}` : ''}`);
-  
+
+  // ===== UVS 2.0: persist verified game to public audit trail (Firestore) =====
+  // "Recipe, not dish": store seeds + delta-compressed inputLog; anyone replays to verify.
+  if (ok && trailEnabled && trailDb) {
+    const compressed = compressInputLog(inputLog);
+    const inputHash = sha256Hex(JSON.stringify(compressed));
+    const gameId = sha256Hex(serverSeed + ':' + inputHash);
+    const trailRecord = {
+      gameId,
+      protocol: 'UVS-2.0',
+      granularity: 'ALL',
+      regSeed: regSeed >>> 0,
+      gameSeed: gameSeed >>> 0,
+      serverSeed,
+      commitment: sha256Hex(serverSeed),
+      numBalls,
+      betPerBall: betPerBall || 5,
+      totalWin: serverWin,
+      ticks: tickIdx,
+      inputLen: Array.isArray(inputLog) ? inputLog.length : 0,
+      inputLog: compressed,
+      ts: Date.now()
+    };
+    trailDb.collection('paddla_games').doc(gameId).set(trailRecord)
+      .catch(e => console.warn('[TRAIL] write failed:', e.message));
+  }
+
   res.json({
     ok,
     serverTotalWin: serverWin,
@@ -379,6 +446,26 @@ app.post('/simulate/paddla', (req, res) => {
     max: parseFloat(Math.max(...rtps).toFixed(2)),
     elapsed: parseFloat(elapsed)
   });
+});
+
+// ===== UVS 2.0: public audit trail read endpoints =====
+app.get('/trail', async (req, res) => {
+  if (!trailEnabled || !trailDb) return res.json({ count: 0, items: [], note: 'trail disabled' });
+  try {
+    const limit = Math.min(parseInt(req.query.limit) || 20, 100);
+    const snap = await trailDb.collection('paddla_games').orderBy('ts', 'desc').limit(limit).get();
+    const items = snap.docs.map(d => { const x = d.data(); return { gameId: x.gameId, totalWin: x.totalWin, numBalls: x.numBalls, ts: x.ts }; });
+    res.json({ count: items.length, items });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.get('/trail/:id', async (req, res) => {
+  if (!trailEnabled || !trailDb) return res.status(503).json({ error: 'trail disabled' });
+  try {
+    const doc = await trailDb.collection('paddla_games').doc(req.params.id).get();
+    if (!doc.exists) return res.status(404).json({ error: 'not found' });
+    res.json(doc.data());
+  } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 // ============================================================
