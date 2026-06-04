@@ -21,7 +21,7 @@
 </style></head>
 <body><div class="wrap">
 <h1>🏓 PADDLA <span class="badge">🔒 UVS 2.0 · public audit trail</span></h1>
-<div style="margin:6px 0 16px"><a href="https://paddla.uncloned.work" target="_blank" rel="noopener" style="display:inline-block;background:linear-gradient(180deg,#00d4ff,#0099cc);color:#001018;font-weight:bold;text-decoration:none;padding:9px 20px;border-radius:8px;letter-spacing:1px">▶ Play PADDLA</a></div>
+<div id="actions" style="margin:6px 0 16px"></div>
 <div id="out">Loading…</div>
 <div class="note">This page reads the immutable record from the public trail and re-checks the commitment in your browser.
 The full input log is the "recipe": anyone with the PADDLA engine can replay it from these seeds to reproduce the result byte-for-byte.</div>
@@ -53,6 +53,9 @@ function rowsHTML(r, commitOk){
 (async () => {
   const id = new URLSearchParams(location.search).get('id');
   if(!id){ $('out').innerHTML = '<span class="bad">No game id. Use ?id=…</span>'; return; }
+  $('actions').innerHTML =
+    `<a href="https://paddla.uncloned.work/?replay=${encodeURIComponent(id)}" target="_blank" rel="noopener" style="display:inline-block;background:linear-gradient(180deg,#00d4ff,#0099cc);color:#001018;font-weight:bold;text-decoration:none;padding:9px 20px;border-radius:8px;letter-spacing:1px">▶ Replay this spin</a>`
+    + `<a href="https://paddla.uncloned.work" target="_blank" rel="noopener" style="margin-left:12px;color:#8a8aa0;font-size:12px;text-decoration:none">or play a new game →</a>`;
   try{
     const r = await (await fetch('/trail/'+encodeURIComponent(id))).json();
     if(r.error){ $('out').innerHTML = '<span class="bad">'+esc(r.error)+'</span>'; return; }

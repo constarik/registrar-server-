@@ -258,7 +258,7 @@ app.get('/debug/:regSeed/:gameSeed', (req, res) => {
 });
 
 
-const REGISTRAR_VERSION = '2.2.3';
+const REGISTRAR_VERSION = '2.2.4';
 
 app.get('/', (req, res) => {
   res.send(`<!DOCTYPE html>
