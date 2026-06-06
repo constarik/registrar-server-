@@ -12,6 +12,33 @@
 const express = require('express');
 const cors    = require('cors');
 const crypto  = require('crypto');
+const https   = require('https');
+
+// ── drand notary anchor (quicknet) — binds each verified game to a public round.
+//    "save now, anchor when drand arrives": the record is written immediately, then a
+//    future round is fetched async and the anchor is updated. Never blocks the player.
+//    Notary (proves the record's public-timeline binding), not outcome-binding.
+const DRAND = { period: 3, genesis: 1692803367, chainHash: '52db9ba70e0cc0f6eaf7803dd07447a1f5477735fd3f661792ba94600c84e971' };
+function drandRoundAt(t) { return Math.floor((t - DRAND.genesis) / DRAND.period) + 1; }
+function drandTimeOf(r) { return DRAND.genesis + (r - 1) * DRAND.period; }
+function drandFutureRound(aheadSec) { return drandRoundAt(Date.now() / 1000) + Math.max(1, Math.ceil((aheadSec || 9) / DRAND.period)); }
+function _httpsGetJson(url) {
+  return new Promise((resolve) => {
+    https.get(url, (res) => {
+      if (res.statusCode !== 200) { res.resume(); return resolve(null); }
+      let d = ''; res.on('data', c => d += c); res.on('end', () => { try { resolve(JSON.parse(d)); } catch { resolve(null); } });
+    }).on('error', () => resolve(null));
+  });
+}
+async function drandFetch(round, tries) {
+  const url = `https://api.drand.sh/${DRAND.chainHash}/public/${round}`;
+  for (let i = 0; i < (tries || 10); i++) {
+    const j = await _httpsGetJson(url);
+    if (j && j.randomness) return { round: j.round, randomness: j.randomness };
+    await new Promise(r => setTimeout(r, 1500));
+  }
+  return null;
+}
 const http    = require('http');
 const { WebSocketServer } = require('ws');
 const { NoisoreEngine } = require('./engine-server');
@@ -258,7 +285,7 @@ app.get('/debug/:regSeed/:gameSeed', (req, res) => {
 });
 
 
-const REGISTRAR_VERSION = '2.3.0';
+const REGISTRAR_VERSION = '2.4.0';
 
 app.get('/', (req, res) => {
   res.send(`<!DOCTYPE html>
@@ -387,7 +414,18 @@ app.post('/verify/paddla', (req, res) => {
       inputLog: compressed,
       ts: Date.now()
     };
+    const anchorRound = drandFutureRound(9);
+    trailRecord.anchor = { source: 'drand', beacon: 'quicknet', round: anchorRound, dueAt: drandTimeOf(anchorRound), committedAt: Date.now(), status: 'pending' };
     trailDb.collection('paddla_games').doc(gameId).set(trailRecord)
+      .then(() => {
+        // async: when the committed future round publishes, attach its randomness (re-save)
+        drandFetch(anchorRound).then(d => {
+          if (d) trailDb.collection('paddla_games').doc(gameId).update({
+            anchor: { source: 'drand', beacon: 'quicknet', round: d.round, randomness: d.randomness,
+                      time: drandTimeOf(d.round), verifyUrl: `https://api.drand.sh/${DRAND.chainHash}/public/${d.round}`, status: 'anchored' }
+          }).then(() => console.log(`[ANCHOR] ${gameId.slice(0,12)} -> drand round ${d.round}`)).catch(e => console.warn('[ANCHOR] update failed:', e.message));
+        });
+      })
       .catch(e => console.warn('[TRAIL] write failed:', e.message));
   }
 
