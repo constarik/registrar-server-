@@ -148,7 +148,7 @@ setInterval(cleanSessions, 10_000);
 // API
 // ============================================================
 
-const UVS_SUPPORTED_VERSIONS = [1]; // integer versions; exclude broken ones explicitly
+const UVS_SUPPORTED_VERSIONS = [1, 2]; // integer versions; exclude broken ones explicitly. v2 == v1 wire-identical (renumber to match finalized UVS 2.0); v1 kept for back-compat.
 
 function negotiateVersion(clientVersions) {
   if (!Array.isArray(clientVersions)) return null;
@@ -258,7 +258,7 @@ app.get('/debug/:regSeed/:gameSeed', (req, res) => {
 });
 
 
-const REGISTRAR_VERSION = '2.2.5';
+const REGISTRAR_VERSION = '2.3.0';
 
 app.get('/', (req, res) => {
   res.send(`<!DOCTYPE html>
@@ -291,7 +291,7 @@ app.get('/', (req, res) => {
 });
 
 app.get('/version', (req, res) => {
-  res.json({ version: REGISTRAR_VERSION, uvsVersion: 1, engine: 'ChaCha20+SHA512', paddlaProtocol: 'UVS-2.0 (Move Batch, G=ALL)', trailEnabled });
+  res.json({ version: REGISTRAR_VERSION, uvsVersion: 2, engine: 'ChaCha20+SHA512', paddlaProtocol: 'UVS-2.0 (Move Batch, G=ALL)', trailEnabled });
 });
 
 app.get('/status', (req, res) => {
