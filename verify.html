@@ -59,14 +59,28 @@ function rowsHTML(r, commitOk){
     f('Input samples', esc(Array.isArray(r.inputLog)?r.inputLog.length:0)+' (delta-encoded from '+esc(r.inputLen)+' ticks)')
   ].join('');
 }
+async function verifyAnchor(){
+  const a = window.__anchor; if(!a) return;
+  const out = document.getElementById('anchorVerdict'); out.innerHTML = 'checking drand…';
+  try{
+    const j = await (await fetch(a.url)).json();
+    const got = j && j.randomness;
+    if(!got){ out.innerHTML = '<span class="bad">couldn\'t read drand — open the raw link and check by hand</span>'; return; }
+    out.innerHTML = (got === a.randomness)
+      ? '<span class="ok">✓ Confirmed — drand round '+esc(a.round)+' publicly has exactly this randomness. The record is bound to the real public beacon value; it could not be faked or back-dated.</span>'
+      : '<span class="bad">✗ MISMATCH — drand says '+esc(String(got).slice(0,16))+'…, the record claims '+esc(String(a.randomness).slice(0,16))+'…</span>';
+  }catch(e){ out.innerHTML = '<span class="bad">drand unreachable: '+esc(e.message)+'</span>'; }
+}
 function tierHTML(r){
   const a = r.anchor;
   if (a && a.status === 'anchored' && a.round && a.randomness){
     const url = a.verifyUrl || ('https://api.drand.sh/52db9ba70e0cc0f6eaf7803dd07447a1f5477735fd3f661792ba94600c84e971/public/'+a.round);
+    window.__anchor = { round: a.round, randomness: a.randomness, url: url };
     return `<div class="tier amber">
       <div class="tier-top">🟡 NOTARY-ANCHORED</div>
       <div class="tier-sub">Bound to public <b>drand</b> round <b>${esc(a.round)}</b> · randomness <span class="seed">${esc(String(a.randomness).slice(0,24))}…</span></div>
-      <div class="tier-sub"><a href="${esc(url)}" target="_blank" rel="noopener">re-fetch this round from drand yourself ↗</a> — its randomness must match the value above.</div>
+      <div class="tier-sub"><button onclick="verifyAnchor()" style="background:#11203a;color:#00d4ff;border:1px solid #00d4ff;border-radius:6px;padding:4px 12px;cursor:pointer;font-family:inherit;font-size:12px">✓ verify drand now</button> &nbsp;<a href="${esc(url)}" target="_blank" rel="noopener" style="font-size:11px">raw ↗</a></div>
+      <div id="anchorVerdict" class="tier-sub"></div>
       <div class="tier-note">This record is tied to an independent public randomness beacon anyone can re-check. It is <b>not 🟢</b>: the outcome is not drand-derived (notary, not outcome-binding), and the trail carries no neutral signature or immutability anchor.</div>
     </div>`;
   }
