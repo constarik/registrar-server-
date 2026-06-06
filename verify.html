@@ -18,6 +18,14 @@
   a{color:#00d4ff}
   .note{font-size:12px;color:#667;margin-top:18px}
   button{background:#11203a;color:#00d4ff;border:1px solid #00d4ff;border-radius:6px;padding:6px 14px;cursor:pointer;font-family:inherit;margin-top:6px}
+  .tier{border-radius:10px;padding:12px 14px;margin:8px 0 18px;border:1px solid}
+  .tier-top{font-weight:bold;letter-spacing:1px;font-size:14px}
+  .tier-sub{font-size:12px;margin-top:5px}
+  .tier-sub a{color:inherit;text-decoration:underline}
+  .tier-note{font-size:11px;color:#7a8090;margin-top:8px;line-height:1.5}
+  .tier.amber{background:rgba(242,193,78,.10);border-color:#f2c14e;color:#f2c14e}
+  .tier.green{background:rgba(0,255,100,.10);border-color:#00cc55;color:#00cc55}
+  .tier.red{background:rgba(255,68,68,.13);border-color:#ff4444;color:#ff5d6c}
 </style></head>
 <body><div class="wrap">
 <h1>🏓 PADDLA <span class="badge">🔒 UVS 2.0 · public audit trail</span></h1>
@@ -51,6 +59,28 @@ function rowsHTML(r, commitOk){
     f('Input samples', esc(Array.isArray(r.inputLog)?r.inputLog.length:0)+' (delta-encoded from '+esc(r.inputLen)+' ticks)')
   ].join('');
 }
+function tierHTML(r){
+  const a = r.anchor;
+  if (a && a.status === 'anchored' && a.round && a.randomness){
+    const url = a.verifyUrl || ('https://api.drand.sh/52db9ba70e0cc0f6eaf7803dd07447a1f5477735fd3f661792ba94600c84e971/public/'+a.round);
+    return `<div class="tier amber">
+      <div class="tier-top">🟡 NOTARY-ANCHORED</div>
+      <div class="tier-sub">Bound to public <b>drand</b> round <b>${esc(a.round)}</b> · randomness <span class="seed">${esc(String(a.randomness).slice(0,24))}…</span></div>
+      <div class="tier-sub"><a href="${esc(url)}" target="_blank" rel="noopener">re-fetch this round from drand yourself ↗</a> — its randomness must match the value above.</div>
+      <div class="tier-note">This record is tied to an independent public randomness beacon anyone can re-check. It is <b>not 🟢</b>: the outcome is not drand-derived (notary, not outcome-binding), and the trail carries no neutral signature or immutability anchor.</div>
+    </div>`;
+  }
+  if (a && a.status === 'pending' && a.round){
+    return `<div class="tier amber">
+      <div class="tier-top">🟡 ANCHORING…</div>
+      <div class="tier-sub">Committed to future <b>drand</b> round <b>${esc(a.round)}</b> — not yet published. The anchor finalizes when the round appears (~seconds); reload then.</div>
+    </div>`;
+  }
+  return `<div class="tier red">
+    <div class="tier-top">🔴 UNANCHORED</div>
+    <div class="tier-sub">No external anchor on this record — integrity relies entirely on the host's word (“trust me”).</div>
+  </div>`;
+}
 (async () => {
   const id = new URLSearchParams(location.search).get('id');
   if(!id){ $('out').innerHTML = '<span class="bad">No game id. Use ?id=…</span>'; return; }
@@ -62,7 +92,7 @@ function rowsHTML(r, commitOk){
     if(r.error){ $('out').innerHTML = '<span class="bad">'+esc(r.error)+'</span>'; return; }
     const commitOk = (await sha256hex(r.serverSeed)) === r.commitment;
     const raw = JSON.stringify(r, null, 2);
-    $('out').innerHTML = rowsHTML(r, commitOk)
+    $('out').innerHTML = tierHTML(r) + rowsHTML(r, commitOk)
       + '<details><summary>Show raw record (full input log)</summary>'
       + '<button onclick="dl()">⬇ Download record.json</button>'
       + '<pre id="raw">'+esc(raw)+'</pre></details>'
