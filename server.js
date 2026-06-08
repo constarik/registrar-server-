@@ -318,7 +318,7 @@ app.get('/', (req, res) => {
 });
 
 app.get('/version', (req, res) => {
-  res.json({ version: REGISTRAR_VERSION, uvsVersion: 2, engine: 'ChaCha20+SHA512', paddlaProtocol: 'UVS-2.0 (Move Batch, G=ALL)', trailEnabled });
+  res.json({ version: REGISTRAR_VERSION, uvsVersion: 3, engine: 'ChaCha20+SHA512', paddlaProtocol: 'UVS-3.0 (uvGame · Move Batch · G=ALL)', branches: ['uvGame'], trailEnabled });
 });
 
 app.get('/status', (req, res) => {
@@ -399,7 +399,9 @@ app.post('/verify/paddla', (req, res) => {
     trailGameId = gameId;
     const trailRecord = {
       gameId,
-      protocol: 'UVS-2.0',
+      branch: 'uvGame',
+      uvsVersion: 3,
+      protocol: 'UVS-3.0',
       granularity: 'ALL',
       regSeed: regSeed >>> 0,
       gameSeed: gameSeed >>> 0,
