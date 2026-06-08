@@ -175,7 +175,7 @@ setInterval(cleanSessions, 10_000);
 // API
 // ============================================================
 
-const UVS_SUPPORTED_VERSIONS = [1, 2]; // integer versions; exclude broken ones explicitly. v2 == v1 wire-identical (renumber to match finalized UVS 2.0); v1 kept for back-compat.
+const UVS_SUPPORTED_VERSIONS = [1, 2, 3]; // v3 = three-document release (uvLottery shipped); uvGame v1/v2 wire-identical, not gated on NOISORE (Move Sync is a planned profile). // integer versions; exclude broken ones explicitly. v2 == v1 wire-identical (renumber to match finalized UVS 2.0); v1 kept for back-compat.
 
 function negotiateVersion(clientVersions) {
   if (!Array.isArray(clientVersions)) return null;
@@ -285,7 +285,7 @@ app.get('/debug/:regSeed/:gameSeed', (req, res) => {
 });
 
 
-const REGISTRAR_VERSION = '2.4.2';
+const REGISTRAR_VERSION = '2.5.0';
 
 app.get('/', (req, res) => {
   res.send(`<!DOCTYPE html>
@@ -308,7 +308,7 @@ app.get('/', (req, res) => {
 </style></head>
 <body>
   <h1>🏓 PADDLA</h1>
-  <div class="badge">🔒 UVS v1 | Registrar v${REGISTRAR_VERSION}</div>
+  <div class="badge">🔒 UVS v3 | Registrar v${REGISTRAR_VERSION}</div>
   <div class="links">
     <a class="desktop" href="https://constarik.github.io/Paddla/">🖥 Desktop</a>
     <a class="mobile"  href="https://constarik.github.io/Paddla/mobile.html">📱 Mobile</a>
