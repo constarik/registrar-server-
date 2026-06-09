@@ -348,7 +348,7 @@ app.post('/verify/paddla', (req, res) => {
     return res.status(400).json({ error: 'Missing required fields' });
   }
   
-  // Compute serverSeed from WASM result (UVS 1.0: padStart 64 to match client)
+  // Compute serverSeed from WASM result (UVS v1-v3 wire-identical: padStart 64 to match client)
   const wasmResult = runSpec(regSeed >>> 0, gameSeed >>> 0);
   const serverSeed = wasmResult.toString(16).padStart(64, '0');
   
