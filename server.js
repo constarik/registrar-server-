@@ -54,8 +54,8 @@ try {
   let sa = null;
   if (process.env.FIREBASE_SERVICE_ACCOUNT) {
     sa = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
-  } else {
-    try { sa = require('C:\\Users\\const\\Downloads\\Code\\holepuncher-constr-firebase-adminsdk-fbsvc-a5c94b33ee.json'); } catch (e) { sa = null; }
+  } else if (process.env.FIREBASE_SERVICE_ACCOUNT_FILE) {
+    try { sa = require(process.env.FIREBASE_SERVICE_ACCOUNT_FILE); } catch (e) { sa = null; }
   }
   if (!sa) {
     console.warn('[TRAIL] Disabled: no Firebase credentials (set FIREBASE_SERVICE_ACCOUNT). Registrar runs without persistent trail.');
@@ -86,6 +86,13 @@ function compressInputLog(inputLog) {
 const app  = express();
 app.use(cors());
 app.use(express.json({ limit: '5mb' }));
+
+// ── 3Б: anchored uvLottery draws (merged 3A contour) ─────────────────────────
+// /commit /reveal /anchor-record /health — RFC-3161 ×2 TSA, derived-R (uvLs §5.4.1),
+// tier VERIFIED by uvs-host before 🟢. TSA roots auto-fetched at boot (see anchored-draws.js).
+const { mountAnchoredDraws } = require('./anchored-draws');
+const anchoredInfo = mountAnchoredDraws(app);
+console.log('[3B] anchored draws mounted; TSAs=' + anchoredInfo.tsas.join('+'));
 
 // Mobile detection — redirect to GitHub Pages mobile version
 app.get('/', (req, res) => {
@@ -318,7 +325,7 @@ app.get('/', (req, res) => {
 });
 
 app.get('/version', (req, res) => {
-  res.json({ version: REGISTRAR_VERSION, uvsVersion: 3, engine: 'ChaCha20+SHA512', paddlaProtocol: 'UVS-3.0 (uvGame · Move Batch · G=ALL)', branches: ['uvGame'], trailEnabled });
+  res.json({ version: REGISTRAR_VERSION, uvsVersion: 3, engine: 'ChaCha20+SHA512', paddlaProtocol: 'UVS-3.0 (uvGame · Move Batch · G=ALL)', branches: ['uvGame', 'uvLottery'], anchoredDraws: true, trailEnabled });
 });
 
 app.get('/status', (req, res) => {
@@ -326,7 +333,7 @@ app.get('/status', (req, res) => {
     status: 'online',
     version: REGISTRAR_VERSION,
     activeSessions: sessions.size,
-    engines: ['paddla'],
+    engines: ['paddla', 'lottery (anchored, uvLs §5.4.1)'],
     uptime: process.uptime().toFixed(1) + 's',
     play: {
       desktop: 'https://constarik.github.io/Paddla/',
