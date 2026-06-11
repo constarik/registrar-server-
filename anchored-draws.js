@@ -162,7 +162,16 @@ function mountAnchoredDraws(app) {
   app.post('/anchor-record', async (req, res) => {
     try {
       const b = req.body || {};
-      const commitmentHash = b.commitmentHash || sha256(UVSCore.canonicalJSON(b.record || b));
+      // Hash mode: canonical JSON when the record is integer-clean (cross-language recomputable);
+      // otherwise the EXACT JSON bytes of the record (floats allowed — a settled game record like
+      // PADDLA's carries physics floats, and a notary stamps bytes, not cross-language semantics).
+      // The mode is returned so a verifier knows how to recompute the hash.
+      let commitmentHash = b.commitmentHash || null, hashMode = b.commitmentHash ? 'provided' : null;
+      if (!commitmentHash) {
+        const rec = b.record || b;
+        try { commitmentHash = sha256(UVSCore.canonicalJSON(rec)); hashMode = 'canonical-json'; }
+        catch (e) { commitmentHash = sha256(JSON.stringify(rec)); hashMode = 'json-bytes'; }
+      }
       let notary, otsProof;
       try {
         const [a, o] = await Promise.all([
@@ -172,7 +181,7 @@ function mountAnchoredDraws(app) {
         notary = a; otsProof = (o && o.ok) ? o : null;
       } catch (e) { return res.status(502).json({ error: 'RFC-3161 notary stamping failed: ' + e.message }); }
       res.json({
-        commitmentHash, notary, ots: otsProof, tier: 'notary',
+        commitmentHash, hashMode, notary, ots: otsProof, tier: 'notary',
         note: 'RFC-3161 = neutral notary (existence-at-time). A game outcome is input-seeded (no future drand round), ' +
               'so this is honest 🟡 notary now; the OpenTimestamps proof matures to 🟢 trail-immutability after a Bitcoin block confirms (~hours).'
       });
