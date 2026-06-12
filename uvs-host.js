@@ -146,7 +146,11 @@ function createHost(cfg) {
       let gameId = null, tier = null;
       if (ok) {
         const compressed = UVSCore.compressInputLog(body.inputLog);
-        const inputHash = sha256(UVSCore.canonicalJSON(compressed));
+        // uvGs §10.3: gameId = SHA-256(serverSeed : SHA-256(JSON(compressedInputLog))) — PLAIN
+        // JSON bytes, not canonical JSON: Move targets are floats (quantized by the engine at
+        // consumption, §3.5), and canonical JSON is integer-only by design (core §5). The recipe
+        // hash needs stable bytes, and JS JSON number formatting is ECMA-mandated shortest-round-trip.
+        const inputHash = sha256(JSON.stringify(compressed));
         gameId = sha256(serverSeed + ':' + inputHash);
         const record = {
           gameId, game, branch: 'uvGame', uvsVersion: 3, protocol: 'UVS-3.0', granularity: 'ALL',
