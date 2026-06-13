@@ -221,6 +221,21 @@ function mountAnchoredDraws(app) {
     } catch (e) { res.status(500).json({ error: e.message }); }
   });
 
+  // Read-only status — lets anyone watch a draw get revealed WITHOUT triggering a reveal and without
+  // leaking serverSeed (still secret pre-reveal). This is how you SEE the ticker work: poll after
+  // closing the tab; `revealed:true` appearing on its own means the server did it, not you.
+  app.get('/draw-status/:sessionId', (req, res) => {
+    const s = pending.get(req.params.sessionId);
+    if (!s) return res.status(404).json({ error: 'unknown session' });
+    const now = Math.floor(Date.now() / 1000);
+    if (s.revealed && s.result) {
+      return res.json({ revealed: true, revealedAt: s.revealedAt || null, tier: s.result.tier,
+                        round: s.round, drawId: s.result.drawId || s.result.gameId || null });
+    }
+    res.json({ revealed: false, round: s.round, roundTime: s.roundTime, now, roundPublished: s.roundTime <= now });
+    // NB: never returns serverSeed/result before reveal — those stay secret until performReveal runs.
+  });
+
   // ---- autonomous reveal ticker ------------------------------------------------------------------
   // Reveals each session within ~REVEAL_TICK_MS of its round publishing, no human in the loop
   // (closes "nobody is awake to POST /reveal"). The race ticker-vs-manual is benign: both fetch the
