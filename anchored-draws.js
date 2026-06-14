@@ -34,6 +34,8 @@ const hashBytes = (hex) => crypto.createHash('sha256').update(Buffer.from(hex, '
 
 const OPENSSL = process.env.UVS_OPENSSL || 'openssl';
 const DRAND_BASE = process.env.UVS_DRAND_BASE || null;   // test stub override; null = public quicknet API
+const MIN_DELAY_S = Number(process.env.UVS_MIN_DELAY_S || 60);          // floor for scheduled reveal (env-overridable for tests)
+const MAX_DELAY_S = Number(process.env.UVS_MAX_DELAY_S || 7 * 24 * 3600); // ceiling: bound how long serverSeed waits in storage
 const TSAS = process.env.UVS_TSA_LOCAL
   ? [{ name: 'local', local: process.env.UVS_TSA_LOCAL }]
   : [{ name: 'freetsa', url: 'https://freetsa.org/tsr' },          // ×2 independent TSAs, different
@@ -172,17 +174,34 @@ function mountAnchoredDraws(app, opts) {
 
   app.post('/commit', async (req, res) => {
     try {
-      const { participants, rules, model, label } = req.body || {};
+      const { participants, rules, model, label, delaySeconds } = req.body || {};
       if (!Array.isArray(participants) || !rules) return res.status(400).json({ error: 'need participants[] and rules' });
       if (new Set(participants).size !== participants.length)
         return res.status(400).json({ error: 'INVALID: duplicate participant ids — record rejected (uvLs §3.1)' });
       // optional human label for navigation — UNTRUSTED display text, NFC-normalized, capped. Not identity.
       const cleanLabel = (typeof label === 'string' && label.trim()) ? label.normalize('NFC').slice(0, 80) : null;
+      // optional scheduled reveal. 0 = derived-R (next round, ~3s — tightest, no operator choice over R).
+      // >0 = explicit-R: target round ~delay seconds ahead, picked from wall-clock and baked INTO the hash.
+      // Either way the round is in the FUTURE at commit → un-grindable; delay just sets how far ahead.
+      // Floor (default 60s) keeps genTime < timeOfRound(R) safe against stamp latency; ceiling bounds how
+      // long serverSeed sits in durable storage before reveal.
+      let delay = Number(delaySeconds) || 0;
+      if (delay > 0) delay = Math.max(MIN_DELAY_S, Math.min(delay, MAX_DELAY_S));
       const serverSeed = crypto.randomBytes(32).toString('hex');
       const commitment = sha256(serverSeed);
-      // commitmentHash does NOT include the round — the round is DERIVED from the proven timestamp,
-      // so the operator has no choice over R (nothing to grind) and §5.4 holds by construction.
-      const commitmentRecord = { participants, prizePool: rules.prizePool || rules, commitment, chainHash: drand.QUICKNET.chainHash };
+      const prizePool = rules.prizePool || rules;
+      const chainHash = drand.QUICKNET.chainHash;
+      let round, roundRule, commitmentRecord;
+      if (delay > 0) {
+        // explicit-R: round chosen from now+delay BEFORE stamping, and included in the commitment hash.
+        round = drand.roundAt(Math.floor(Date.now() / 1000) + delay) + 1;
+        roundRule = 'explicit-R';
+        commitmentRecord = { participants, prizePool, commitment, chainHash, round };
+      } else {
+        // derived-R (uvLs §5.4.1): round derived from the proven stamp; NOT in the hash; no operator choice.
+        roundRule = 'roundAt(genTime)+1';
+        commitmentRecord = { participants, prizePool, commitment, chainHash };
+      }
       const commitmentHash = sha256(UVSCore.canonicalJSON(commitmentRecord));
       let anchor, otsProof;
       try {
@@ -192,13 +211,14 @@ function mountAnchoredDraws(app, opts) {
         ]);
         anchor = a; otsProof = (o && o.ok) ? o : null;
       } catch (e) { return res.status(502).json({ error: 'TSA stamping failed: ' + e.message }); }
-      // §5.4.1: R = first drand round strictly AFTER the latest stamp (max genTime ⇒ every token predates R).
-      const genTime = Math.max.apply(null, anchor.tokens.map(t => t.genTime));
-      const round = drand.roundAt(genTime) + 1;
+      const genTime = Math.max.apply(null, anchor.tokens.map(t => t.genTime));   // latest stamp ⇒ every token predates R
+      if (delay === 0) round = drand.roundAt(genTime) + 1;                        // derived: round known only now
       const roundTime = drand.timeOfRound(round);
+      // §5.4 invariant: the stamp MUST predate the round, or the anchor proves nothing.
+      if (genTime >= roundTime) return res.status(500).json({ error: 'stamp landed at/after target round (clock skew or stamp latency) — retry' + (delay ? ' with a larger delaySeconds' : '') });
       const sessionId = crypto.randomBytes(8).toString('hex');
-      await store.putPending(sessionId, { serverSeed, commitment, round, roundTime, genTime, participants, rules, model: model || 'tickets', label: cleanLabel, commitmentHash, anchor, ots: otsProof });
-      res.json({ sessionId, commitment, round, roundTime, commitmentHash, commitmentAnchor: anchor, ots: otsProof, label: cleanLabel });
+      await store.putPending(sessionId, { serverSeed, commitment, round, roundTime, genTime, roundRule, participants, rules, model: model || 'tickets', label: cleanLabel, commitmentHash, anchor, ots: otsProof });
+      res.json({ sessionId, commitment, round, roundTime, roundRule, delaySeconds: delay, commitmentHash, commitmentAnchor: anchor, ots: otsProof, label: cleanLabel });
     } catch (e) { res.status(500).json({ error: e.message }); }
   });
 
@@ -220,7 +240,7 @@ function mountAnchoredDraws(app, opts) {
       serverSeed: s.serverSeed, commitment: s.commitment, commitTime,
       drand: { round: s.round, randomness: r.randomness },
       commitmentAnchor: {
-        kind: 'rfc3161', commitmentHash: s.commitmentHash, roundRule: 'roundAt(genTime)+1',
+        kind: 'rfc3161', commitmentHash: s.commitmentHash, roundRule: s.roundRule || 'roundAt(genTime)+1',
         proof: tokens[0].proof, genTime: commitTime, tsa: tokens.map(t => t.tsa).join('+'),
         tokens, ots: s.ots || null
       },
@@ -234,7 +254,7 @@ function mountAnchoredDraws(app, opts) {
                randomness: r.randomness, roundTime: s.roundTime,
                verifyUrl: 'https://api.drand.sh/' + drand.QUICKNET.chainHash + '/public/' + s.round },
       commitmentHash: s.commitmentHash,
-      commitmentAnchor: { kind: 'rfc3161', commitmentHash: s.commitmentHash, genTime: commitTime, roundRule: 'roundAt(genTime)+1',
+      commitmentAnchor: { kind: 'rfc3161', commitmentHash: s.commitmentHash, genTime: commitTime, roundRule: s.roundRule || 'roundAt(genTime)+1',
                           tsa: tokens.map(t => t.tsa).join('+'), tokens, ots: s.ots || null }
     });
     await store.markRevealed(sessionId, s, record);   // persist (pending: idempotency; public: durable trail)
