@@ -1,19 +1,19 @@
 /* ============================================================================
  * 3Б — anchored uvLottery draws on the registrar host (merge of the 3A contour).
  *
- * Mounts onto the registrar's existing Express app:
- *   POST /commit        { participants, rules, model }
- *        -> serverSeed + commitment; commitmentHash = SHA-256(canonical record, NO round);
- *           stamp at the RFC-3161 TSA(s); derive R = roundAt(maxGenTime)+1 (uvLs §5.4.1).
- *   POST /reveal        { sessionId }   (after round R publishes, ≤ one drand period)
- *        -> fetch randomness(R), run the draw via uvs-host (which VERIFIES the anchor
- *           against the TSA CA bundle before deriving 🟢 — audit A1), return the record.
- *   POST /anchor-record { record } | { commitmentHash }  — RFC-3161 notary for settled records.
- *   GET  /health        — same shape the /draw page polls to enable Anchored mode.
+ *   POST /commit        { participants, rules, model } -> sessionId, commitment, round, anchor
+ *   POST /reveal        { sessionId }                  -> the 🟢 record (idempotent)
+ *   GET  /draw-status/:sessionId                       -> {revealed,...} (read-only, no serverSeed pre-reveal)
+ *   GET  /draws/:drawId                                -> a settled public record (durable)
+ *   GET  /draws?limit=N                                -> recent settled public records
+ *   POST /anchor-record { record | commitmentHash }    -> RFC-3161 notary
+ *   GET  /health
  *
- * TSA trust roots: downloaded at BOOT directly from each TSA (uvLs §5.4 — the trust
- * anchor must not come from the operator) into UVS_TSA_BUNDLE; override with UVS_TSA_CA.
- * Test mode: UVS_TSA_LOCAL=<dir with tsa.cnf> (+ its ca.pem as the CA), UVS_DRAND_BASE=<stub>.
+ * DURABILITY (audit B2): state lives in Firestore when a trailDb handle is passed in, else in
+ * STATE_DIR files (ephemeral; local/no-Firebase fallback, behaviour unchanged). serverSeed is SECRET
+ * until reveal: pre-reveal it sits ONLY in the private `uvs_draws_pending` collection (denied to all
+ * clients by the project's default-deny rules; admin SDK bypasses). The public record (serverSeed now
+ * legitimately revealed) is written to `uvs_draws` and served via the HTTP API — never client-direct.
  * ========================================================================== */
 'use strict';
 
@@ -80,29 +80,75 @@ async function bootstrapCA() {
   return caState;
 }
 
-// ---- pending commit→reveal state, file-per-session (survives restarts in-window) ----
+// ---- file backend: file-per-session in STATE_DIR (no-Firebase / local fallback) ----
 const STATE_DIR = process.env.UVS_STATE_DIR || path.join(os.tmpdir(), 'uvs3b-pending');
 try { fs.mkdirSync(STATE_DIR, { recursive: true }); } catch (e) {}
-const pending = {
+const fileBackend = {
   put(id, rec) { try { fs.writeFileSync(path.join(STATE_DIR, id + '.json'), JSON.stringify(rec)); } catch (e) {} },
   get(id) { try { return JSON.parse(fs.readFileSync(path.join(STATE_DIR, id + '.json'), 'utf8')); } catch (e) { return null; } },
   del(id) { try { fs.unlinkSync(path.join(STATE_DIR, id + '.json')); } catch (e) {} },
-  // List every session on disk. sessionId comes from the FILENAME (the record carries no sessionId
-  // field). Per-file try/catch: a corrupt or half-written file is skipped this sweep, never kills the
-  // whole list — so one in-flight write can't stop the autonomous ticker (audit B4/B7).
   list() {
     let names;
     try { names = fs.readdirSync(STATE_DIR).filter(n => n.endsWith('.json')); } catch (e) { return []; }
     const out = [];
     for (const n of names) {
       try { out.push(Object.assign({ sessionId: n.slice(0, -5) }, JSON.parse(fs.readFileSync(path.join(STATE_DIR, n), 'utf8')))); }
-      catch (e) { /* corrupt/partial file — skip this sweep, retry next */ }
+      catch (e) { /* corrupt/partial file — skip this sweep, retry next (audit B4) */ }
     }
     return out;
   }
 };
 
-function mountAnchoredDraws(app) {
+// ---- store: durable Firestore when a trailDb handle is present, else the file backend. ----
+// All methods async so the caller awaits uniformly (audit B2/B3: missing an await = lost write/race).
+//   Pending lives in `uvs_draws_pending` (PRIVATE — holds serverSeed until reveal).
+//   Settled public record lives in `uvs_draws` (served via HTTP only; serverSeed public post-reveal).
+//   markRevealed KEEPS the pending doc (revealed:true + result) so reveal stays idempotent and
+//   /draw-status by sessionId keeps working; retention (ticker) deletes it after REVEAL_RETAIN_S.
+const PENDING_COLL = 'uvs_draws_pending';
+const PUBLIC_COLL  = 'uvs_draws';
+function makeStore(trailDb) {
+  if (!trailDb) {
+    return {
+      mode: 'file',
+      async putPending(id, rec) { fileBackend.put(id, rec); },
+      async getPending(id) { return fileBackend.get(id); },
+      async delPending(id) { fileBackend.del(id); },
+      async listPending() { return fileBackend.list(); },
+      async markRevealed(id, rec, record) {
+        rec.revealed = true; rec.result = record; rec.revealedAt = Math.floor(Date.now() / 1000);
+        fileBackend.put(id, rec);
+      },
+      async getPublic(drawId) {
+        for (const s of fileBackend.list()) if (s.revealed && s.result && (s.result.drawId === drawId || s.result.gameId === drawId)) return s.result;
+        return null;
+      },
+      async listPublic(limit) {
+        return fileBackend.list().filter(s => s.revealed && s.result)
+          .sort((a, b) => (b.revealedAt || 0) - (a.revealedAt || 0)).slice(0, limit).map(s => s.result);
+      }
+    };
+  }
+  return {
+    mode: 'firestore',
+    async putPending(id, rec) { await trailDb.collection(PENDING_COLL).doc(id).set(rec); },
+    async getPending(id) { const d = await trailDb.collection(PENDING_COLL).doc(id).get(); return d.exists ? d.data() : null; },
+    async delPending(id) { try { await trailDb.collection(PENDING_COLL).doc(id).delete(); } catch (e) {} },
+    async listPending() { const snap = await trailDb.collection(PENDING_COLL).get(); return snap.docs.map(d => Object.assign({ sessionId: d.id }, d.data())); },
+    async markRevealed(id, rec, record) {
+      rec.revealed = true; rec.result = record; rec.revealedAt = Math.floor(Date.now() / 1000);
+      await trailDb.collection(PUBLIC_COLL).doc(record.drawId || record.gameId).set(Object.assign({ ts: Date.now() }, record));  // public, durable
+      await trailDb.collection(PENDING_COLL).doc(id).set(rec);                                                                   // keep pending for idempotency; retention deletes later
+    },
+    async getPublic(drawId) { const d = await trailDb.collection(PUBLIC_COLL).doc(drawId).get(); return d.exists ? d.data() : null; },
+    async listPublic(limit) { const snap = await trailDb.collection(PUBLIC_COLL).orderBy('ts', 'desc').limit(limit).get(); return snap.docs.map(d => d.data()); }
+  };
+}
+
+function mountAnchoredDraws(app, opts) {
+  opts = opts || {};
+  const store = makeStore(opts.trailEnabled && opts.trailDb ? opts.trailDb : null);
+  console.log('[3B] anchored-draw store: ' + store.mode + (store.mode === 'file' ? ' (STATE_DIR=' + STATE_DIR + ', ephemeral — durable persistence needs Firestore)' : ' (uvs_draws_pending/uvs_draws)'));
   bootstrapCA();   // async; /health reports readiness
   const host = createHost({ sha256, versions: [1, 2, 3], tsa: { caFile: TSA_CA, openssl: OPENSSL } })
     .use(makeLottery({ sha256, name: 'lottery' }));
@@ -132,17 +178,17 @@ function mountAnchoredDraws(app) {
       const round = drand.roundAt(genTime) + 1;
       const roundTime = drand.timeOfRound(round);
       const sessionId = crypto.randomBytes(8).toString('hex');
-      pending.put(sessionId, { serverSeed, commitment, round, roundTime, genTime, participants, rules, model: model || 'tickets', commitmentHash, anchor, ots: otsProof });
+      await store.putPending(sessionId, { serverSeed, commitment, round, roundTime, genTime, participants, rules, model: model || 'tickets', commitmentHash, anchor, ots: otsProof });
       res.json({ sessionId, commitment, round, roundTime, commitmentHash, commitmentAnchor: anchor, ots: otsProof });
     } catch (e) { res.status(500).json({ error: e.message }); }
   });
 
   // Reveal core — reusable by the HTTP handler AND the autonomous ticker.
-  // Idempotent: once revealed, the FULL response object is cached on the session file and re-served
+  // Idempotent: once revealed, the FULL response object is cached on the session and re-served
   // verbatim, never recomputed (a later drand-mirror discrepancy can't change a settled result — B6).
   // Returns { status:'unknown' } | { status:'too_early', round, roundTime } | { status:'revealed', record }.
   async function performReveal(sessionId) {
-    const s = pending.get(sessionId);
+    const s = await store.getPending(sessionId);
     if (!s) return { status: 'unknown' };
     if (s.revealed && s.result) return { status: 'revealed', record: s.result };          // cached — no recompute
     if (s.roundTime > Math.floor(Date.now() / 1000)) return { status: 'too_early', round: s.round, roundTime: s.roundTime };
@@ -161,8 +207,7 @@ function mountAnchoredDraws(app) {
       },
       participants: s.participants, rules: s.rules, model: s.model
     });
-    // The FULL response — byte-identical to what /reveal returned before this refactor. Cache THIS
-    // (assembled), not just host.draw's `dr`, so every re-serve is identical in shape (audit B6).
+    // The FULL response — byte-identical to what /reveal returned before the autonomy refactor.
     const record = Object.assign({}, dr, {
       serverSeed: s.serverSeed, commitment: s.commitment,
       drand: { beacon: drand.QUICKNET.beacon, chainHash: drand.QUICKNET.chainHash, round: s.round,
@@ -172,10 +217,7 @@ function mountAnchoredDraws(app) {
       commitmentAnchor: { kind: 'rfc3161', commitmentHash: s.commitmentHash, genTime: commitTime, roundRule: 'roundAt(genTime)+1',
                           tsa: tokens.map(t => t.tsa).join('+'), tokens, ots: s.ots || null }
     });
-    // Persist result back onto the session (replaces the old pending.del). Reveal is now idempotent:
-    // ticker, operator, or client may call it any number of times and get this identical record.
-    s.revealed = true; s.result = record; s.revealedAt = Math.floor(Date.now() / 1000);
-    pending.put(sessionId, s);
+    await store.markRevealed(sessionId, s, record);   // persist (pending: idempotency; public: durable trail)
     return { status: 'revealed', record };
   }
 
@@ -191,14 +233,37 @@ function mountAnchoredDraws(app) {
     }
   });
 
+  // Read-only status — watch a draw get revealed WITHOUT triggering it, and WITHOUT leaking serverSeed
+  // (still secret pre-reveal). `revealed:true` appearing on its own means the server did it, not you.
+  app.get('/draw-status/:sessionId', async (req, res) => {
+    try {
+      const s = await store.getPending(req.params.sessionId);
+      if (!s) return res.status(404).json({ error: 'unknown session' });
+      const now = Math.floor(Date.now() / 1000);
+      if (s.revealed && s.result) {
+        return res.json({ revealed: true, revealedAt: s.revealedAt || null, tier: s.result.tier,
+                          round: s.round, drawId: s.result.drawId || s.result.gameId || null });
+      }
+      res.json({ revealed: false, round: s.round, roundTime: s.roundTime, now, roundPublished: s.roundTime <= now });
+      // never returns serverSeed/result before reveal — those stay secret until performReveal runs.
+    } catch (e) { res.status(500).json({ error: e.message }); }
+  });
+
+  // Public, durable read of SETTLED draws (served by the server via admin SDK; the collections
+  // themselves stay client-closed). This is the "published without me" answer + post-restart recovery.
+  app.get('/draws/:drawId', async (req, res) => {
+    try { const rec = await store.getPublic(req.params.drawId); rec ? res.json(rec) : res.status(404).json({ error: 'not found' }); }
+    catch (e) { res.status(500).json({ error: e.message }); }
+  });
+  app.get('/draws', async (req, res) => {
+    try { const items = await store.listPublic(Math.min(parseInt(req.query.limit) || 20, 100)); res.json({ count: items.length, items }); }
+    catch (e) { res.status(500).json({ error: e.message }); }
+  });
+
   // RFC-3161 notary (+best-effort OTS) for any settled record — honest 🟡 now, OTS matures later.
   app.post('/anchor-record', async (req, res) => {
     try {
       const b = req.body || {};
-      // Hash mode: canonical JSON when the record is integer-clean (cross-language recomputable);
-      // otherwise the EXACT JSON bytes of the record (floats allowed — a settled game record like
-      // PADDLA's carries physics floats, and a notary stamps bytes, not cross-language semantics).
-      // The mode is returned so a verifier knows how to recompute the hash.
       let commitmentHash = b.commitmentHash || null, hashMode = b.commitmentHash ? 'provided' : null;
       if (!commitmentHash) {
         const rec = b.record || b;
@@ -221,43 +286,25 @@ function mountAnchoredDraws(app) {
     } catch (e) { res.status(500).json({ error: e.message }); }
   });
 
-  // Read-only status — lets anyone watch a draw get revealed WITHOUT triggering a reveal and without
-  // leaking serverSeed (still secret pre-reveal). This is how you SEE the ticker work: poll after
-  // closing the tab; `revealed:true` appearing on its own means the server did it, not you.
-  app.get('/draw-status/:sessionId', (req, res) => {
-    const s = pending.get(req.params.sessionId);
-    if (!s) return res.status(404).json({ error: 'unknown session' });
-    const now = Math.floor(Date.now() / 1000);
-    if (s.revealed && s.result) {
-      return res.json({ revealed: true, revealedAt: s.revealedAt || null, tier: s.result.tier,
-                        round: s.round, drawId: s.result.drawId || s.result.gameId || null });
-    }
-    res.json({ revealed: false, round: s.round, roundTime: s.roundTime, now, roundPublished: s.roundTime <= now });
-    // NB: never returns serverSeed/result before reveal — those stay secret until performReveal runs.
-  });
-
   // ---- autonomous reveal ticker ------------------------------------------------------------------
-  // Reveals each session within ~REVEAL_TICK_MS of its round publishing, no human in the loop
-  // (closes "nobody is awake to POST /reveal"). The race ticker-vs-manual is benign: both fetch the
-  // same fixed round R, host.draw is deterministic, so the cached record is identical (last write wins).
-  //   B1: this runs in the Node event loop — on a host that suspends idle processes (Render free) it
-  //       only fires while kept warm by inbound traffic; the /health keep-alive ping IS that warmth.
-  //       If the pinger stops, autonomous reveal stops silently.
-  //   B2: state lives in STATE_DIR (tmpdir by default), ephemeral on such hosts — a restart in the
-  //       commit→reveal window loses serverSeed and the draw is unrecoverable. Durable autonomy needs
-  //       persistent storage (Firestore) — deliberately a separate change, not this patch.
+  // Reveals each session within ~REVEAL_TICK_MS of its round publishing, no human in the loop.
+  //   B1: runs in the Node event loop — on a host that suspends idle processes (Render free) it only
+  //       fires while kept warm by inbound traffic; the /health keep-alive ping IS that warmth.
+  //   B2: state durability now depends on the store mode — Firestore (durable) vs file (ephemeral).
   const REVEAL_TICK_MS  = Number(process.env.UVS_REVEAL_TICK_MS  || 5000);
-  const REVEAL_RETAIN_S = Number(process.env.UVS_REVEAL_RETAIN_S || 24 * 3600);   // delete revealed files after this (B3)
+  const REVEAL_RETAIN_S = Number(process.env.UVS_REVEAL_RETAIN_S || 24 * 3600);   // delete revealed pending after this (B3)
   let _ticking = false;                                                            // reentrancy guard (B5)
   async function revealTick() {
     if (_ticking) return;                          // previous (slow) sweep still running — skip
     _ticking = true;
     try {
       const now = Math.floor(Date.now() / 1000);
-      for (const s of pending.list()) {
+      let list = [];
+      try { list = await store.listPending(); } catch (e) { console.warn('[3B-auto] listPending failed: ' + e.message); return; }
+      for (const s of list) {
         try {
-          if (s.revealed) {                        // retention: drop long-settled files so STATE_DIR can't grow forever (B3)
-            if (s.revealedAt && now - s.revealedAt > REVEAL_RETAIN_S) pending.del(s.sessionId);
+          if (s.revealed) {                        // retention: drop long-settled pending so it can't grow forever (B3)
+            if (s.revealedAt && now - s.revealedAt > REVEAL_RETAIN_S) await store.delPending(s.sessionId);
             continue;
           }
           if (s.roundTime > now) continue;         // round not published yet (same gate as the handler)
@@ -274,11 +321,13 @@ function mountAnchoredDraws(app) {
   app.get('/health', (req, res) => res.json({
     ok: true, tsas: TSAS.map(t => t.name), roundRule: 'roundAt(genTime)+1',
     ots: ots.available(), ca: caState,
+    store: store.mode,
     autoReveal: { enabled: true, tickMs: REVEAL_TICK_MS,
-      note: 'autonomous reveal depends on the keep-alive ping (event loop suspends when the host is idle); STATE_DIR is ephemeral (tmpdir) — durable autonomy pending Firestore' }
+      note: 'autonomous reveal depends on the keep-alive ping (event loop suspends when the host is idle); durability is ' + (store.mode === 'firestore' ? 'Firestore (durable)' : 'STATE_DIR files (ephemeral)') }
   }));
 
-  return { tsas: TSAS.map(t => t.name), caFile: TSA_CA, host };
+  return { tsas: TSAS.map(t => t.name), caFile: TSA_CA, host, store,
+           _performReveal: performReveal, _revealTick: revealTick };
 }
 
 module.exports = { mountAnchoredDraws };

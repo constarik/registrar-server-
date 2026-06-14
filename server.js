@@ -91,8 +91,8 @@ app.use(express.json({ limit: '5mb' }));
 // /commit /reveal /anchor-record /health — RFC-3161 ×2 TSA, derived-R (uvLs §5.4.1),
 // tier VERIFIED by uvs-host before 🟢. TSA roots auto-fetched at boot (see anchored-draws.js).
 const { mountAnchoredDraws } = require('./anchored-draws');
-const anchoredInfo = mountAnchoredDraws(app);
-console.log('[3B] anchored draws mounted; TSAs=' + anchoredInfo.tsas.join('+'));
+const anchoredInfo = mountAnchoredDraws(app, { trailDb, trailEnabled });   // pass Firestore handle for durable draw persistence (uvs_draws_pending / uvs_draws)
+console.log('[3B] anchored draws mounted; TSAs=' + anchoredInfo.tsas.join('+') + '; store=' + anchoredInfo.store.mode);
 
 // Mobile detection — redirect to GitHub Pages mobile version
 app.get('/', (req, res) => {
@@ -292,7 +292,7 @@ app.get('/debug/:regSeed/:gameSeed', (req, res) => {
 });
 
 
-const REGISTRAR_VERSION = '2.5.0';
+const REGISTRAR_VERSION = '2.7.0';
 
 app.get('/', (req, res) => {
   res.send(`<!DOCTYPE html>
