@@ -107,6 +107,22 @@ const fileBackend = {
 //   /draw-status by sessionId keeps working; retention (ticker) deletes it after REVEAL_RETAIN_S.
 const PENDING_COLL = 'uvs_draws_pending';
 const PUBLIC_COLL  = 'uvs_draws';
+
+// Lightweight list row: identity + cosmetics + counts, NOT the full record (a draw's result can be
+// hundreds of KB of ranked rows). Full record stays at GET /draws/:drawId. `label` is UNTRUSTED
+// display text (operator-supplied) — never an identity; real identity is the operator signature (planned).
+function summarizeDraw(rec, ts) {
+  return {
+    drawId: rec.drawId || rec.gameId || null,
+    model: rec.model || null,
+    label: rec.label || null,
+    tier: rec.tier || null,
+    participants: Array.isArray(rec.participants) ? rec.participants.length : (Array.isArray(rec.result) ? rec.result.length : null),
+    ts: ts || null,
+    tsISO: ts ? new Date(ts).toISOString() : null
+  };
+}
+
 function makeStore(trailDb) {
   if (!trailDb) {
     return {
@@ -125,7 +141,8 @@ function makeStore(trailDb) {
       },
       async listPublic(limit) {
         return fileBackend.list().filter(s => s.revealed && s.result)
-          .sort((a, b) => (b.revealedAt || 0) - (a.revealedAt || 0)).slice(0, limit).map(s => s.result);
+          .sort((a, b) => (b.revealedAt || 0) - (a.revealedAt || 0)).slice(0, limit)
+          .map(s => summarizeDraw(s.result, (s.revealedAt || 0) * 1000));
       }
     };
   }
@@ -141,7 +158,7 @@ function makeStore(trailDb) {
       await trailDb.collection(PENDING_COLL).doc(id).set(rec);                                                                   // keep pending for idempotency; retention deletes later
     },
     async getPublic(drawId) { const d = await trailDb.collection(PUBLIC_COLL).doc(drawId).get(); return d.exists ? d.data() : null; },
-    async listPublic(limit) { const snap = await trailDb.collection(PUBLIC_COLL).orderBy('ts', 'desc').limit(limit).get(); return snap.docs.map(d => d.data()); }
+    async listPublic(limit) { const snap = await trailDb.collection(PUBLIC_COLL).orderBy('ts', 'desc').limit(limit).get(); return snap.docs.map(d => { const r = d.data(); return summarizeDraw(r, r.ts || null); }); }
   };
 }
 
@@ -155,10 +172,12 @@ function mountAnchoredDraws(app, opts) {
 
   app.post('/commit', async (req, res) => {
     try {
-      const { participants, rules, model } = req.body || {};
+      const { participants, rules, model, label } = req.body || {};
       if (!Array.isArray(participants) || !rules) return res.status(400).json({ error: 'need participants[] and rules' });
       if (new Set(participants).size !== participants.length)
         return res.status(400).json({ error: 'INVALID: duplicate participant ids — record rejected (uvLs §3.1)' });
+      // optional human label for navigation — UNTRUSTED display text, NFC-normalized, capped. Not identity.
+      const cleanLabel = (typeof label === 'string' && label.trim()) ? label.normalize('NFC').slice(0, 80) : null;
       const serverSeed = crypto.randomBytes(32).toString('hex');
       const commitment = sha256(serverSeed);
       // commitmentHash does NOT include the round — the round is DERIVED from the proven timestamp,
@@ -178,8 +197,8 @@ function mountAnchoredDraws(app, opts) {
       const round = drand.roundAt(genTime) + 1;
       const roundTime = drand.timeOfRound(round);
       const sessionId = crypto.randomBytes(8).toString('hex');
-      await store.putPending(sessionId, { serverSeed, commitment, round, roundTime, genTime, participants, rules, model: model || 'tickets', commitmentHash, anchor, ots: otsProof });
-      res.json({ sessionId, commitment, round, roundTime, commitmentHash, commitmentAnchor: anchor, ots: otsProof });
+      await store.putPending(sessionId, { serverSeed, commitment, round, roundTime, genTime, participants, rules, model: model || 'tickets', label: cleanLabel, commitmentHash, anchor, ots: otsProof });
+      res.json({ sessionId, commitment, round, roundTime, commitmentHash, commitmentAnchor: anchor, ots: otsProof, label: cleanLabel });
     } catch (e) { res.status(500).json({ error: e.message }); }
   });
 
@@ -210,6 +229,7 @@ function mountAnchoredDraws(app, opts) {
     // The FULL response — byte-identical to what /reveal returned before the autonomy refactor.
     const record = Object.assign({}, dr, {
       serverSeed: s.serverSeed, commitment: s.commitment,
+      model: s.model || null, label: s.label || null,        // carried so /draws summaries + the record show them
       drand: { beacon: drand.QUICKNET.beacon, chainHash: drand.QUICKNET.chainHash, round: s.round,
                randomness: r.randomness, roundTime: s.roundTime,
                verifyUrl: 'https://api.drand.sh/' + drand.QUICKNET.chainHash + '/public/' + s.round },
