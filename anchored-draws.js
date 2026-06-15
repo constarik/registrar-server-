@@ -91,7 +91,7 @@ const fileBackend = {
   del(id) { try { fs.unlinkSync(path.join(STATE_DIR, id + '.json')); } catch (e) {} },
   list() {
     let names;
-    try { names = fs.readdirSync(STATE_DIR).filter(n => n.endsWith('.json')); } catch (e) { return []; }
+    try { names = fs.readdirSync(STATE_DIR).filter(n => n.endsWith('.json') && !n.startsWith('rules-')); } catch (e) { return []; }
     const out = [];
     for (const n of names) {
       try { out.push(Object.assign({ sessionId: n.slice(0, -5) }, JSON.parse(fs.readFileSync(path.join(STATE_DIR, n), 'utf8')))); }
@@ -129,6 +129,8 @@ function makeStore(trailDb) {
   if (!trailDb) {
     return {
       mode: 'file',
+      async putRules(drawId, rec) { try { fs.writeFileSync(path.join(STATE_DIR, 'rules-' + drawId + '.json'), JSON.stringify(rec)); } catch (e) {} },
+      async getRules(drawId) { try { return JSON.parse(fs.readFileSync(path.join(STATE_DIR, 'rules-' + drawId + '.json'), 'utf8')); } catch (e) { return null; } },
       async putPending(id, rec) { fileBackend.put(id, rec); },
       async getPending(id) { return fileBackend.get(id); },
       async delPending(id) { fileBackend.del(id); },
@@ -150,6 +152,8 @@ function makeStore(trailDb) {
   }
   return {
     mode: 'firestore',
+    async putRules(drawId, rec) { await trailDb.collection('uvs_draw_rules').doc(drawId).set(rec); },
+    async getRules(drawId) { const d = await trailDb.collection('uvs_draw_rules').doc(drawId).get(); return d.exists ? d.data() : null; },
     async putPending(id, rec) { await trailDb.collection(PENDING_COLL).doc(id).set(rec); },
     async getPending(id) { const d = await trailDb.collection(PENDING_COLL).doc(id).get(); return d.exists ? d.data() : null; },
     async delPending(id) { try { await trailDb.collection(PENDING_COLL).doc(id).delete(); } catch (e) {} },
@@ -222,6 +226,84 @@ function mountAnchoredDraws(app, opts) {
     } catch (e) { res.status(500).json({ error: e.message }); }
   });
 
+  // ── §5.5 two-phase: /open (Phase 0 — attest the rules BEFORE sales, no participants yet) ──
+  // Fixes { drawId, prizePool } and timestamps the rulesHash at ×2 RFC-3161 TSAs, so the prize
+  // list is provably frozen before tickets are sold. Print drawId on every ticket; /close later
+  // with the final participants. (Closed-list operators just call /open then /close immediately.)
+  app.post('/open', async (req, res) => {
+    try {
+      const { prizePool, rules, label } = req.body || {};
+      const pool = prizePool || (rules && rules.prizePool) || rules;
+      if (!pool) return res.status(400).json({ error: 'need prizePool' });
+      const cleanLabel = (typeof label === 'string' && label.trim()) ? label.normalize('NFC').slice(0, 80) : null;
+      const drawId = crypto.randomBytes(8).toString('hex');
+      const rulesHash = sha256(UVSCore.canonicalJSON({ drawId, prizePool: pool }));
+      let anchor, otsProof;
+      try {
+        const [a, o] = await Promise.all([
+          rfc.stamp(rulesHash, TSAS, { openssl: OPENSSL }),
+          ots.stamp(rulesHash, { timeoutMs: 12000 }).catch(e => ({ ok: false, error: e.message }))
+        ]);
+        anchor = a; otsProof = (o && o.ok) ? o : null;
+      } catch (e) { return res.status(502).json({ error: 'TSA stamping failed: ' + e.message }); }
+      const genTime = Math.max.apply(null, anchor.tokens.map(t => t.genTime));
+      const openedAt = Math.floor(Date.now() / 1000);
+      await store.putRules(drawId, { drawId, prizePool: pool, label: cleanLabel, rulesHash, rulesAnchor: anchor, ots: otsProof, genTime, openedAt });
+      res.json({ drawId, rulesHash, label: cleanLabel, openedAt, genTime, rulesAnchor: anchor, ots: otsProof,
+        note: '§5.5 Phase 0 — prize rules attested (×2 RFC-3161) before sales. Print drawId on every ticket; call /close with the final participants when sales end.' });
+    } catch (e) { res.status(500).json({ error: e.message }); }
+  });
+
+  // ── §5.5 two-phase: /close (Phase 1 — commit the final participants, reuse the attested rules) ──
+  // The prizePool is loaded from the /open record (the operator cannot swap it here); the draw binds
+  // to a future drand round and reveals autonomously, exactly like /commit. The public record is keyed
+  // by the phase-0 drawId and carries the rules attestation as §5.5 evidence.
+  app.post('/close', async (req, res) => {
+    try {
+      const { drawId, participants, delaySeconds } = req.body || {};
+      if (!drawId) return res.status(400).json({ error: 'need drawId (from /open)' });
+      if (!Array.isArray(participants)) return res.status(400).json({ error: 'need participants[]' });
+      if (new Set(participants).size !== participants.length)
+        return res.status(400).json({ error: 'INVALID: duplicate participant ids — record rejected (uvLs §3.1)' });
+      const rulesRec = await store.getRules(drawId);
+      if (!rulesRec) return res.status(404).json({ error: 'unknown drawId — call /open first' });
+      const prizePool = rulesRec.prizePool;
+      let delay = Number(delaySeconds) || 0;
+      if (delay > 0) delay = Math.max(MIN_DELAY_S, Math.min(delay, MAX_DELAY_S));
+      const serverSeed = crypto.randomBytes(32).toString('hex');
+      const commitment = sha256(serverSeed);
+      const chainHash = drand.QUICKNET.chainHash;
+      let round, roundRule, commitmentRecord;
+      if (delay > 0) {
+        round = drand.roundAt(Math.floor(Date.now() / 1000) + delay) + 1;
+        roundRule = 'explicit-R';
+        commitmentRecord = { participants, prizePool, commitment, chainHash, round };
+      } else {
+        roundRule = 'roundAt(genTime)+1';
+        commitmentRecord = { participants, prizePool, commitment, chainHash };
+      }
+      const commitmentHash = sha256(UVSCore.canonicalJSON(commitmentRecord));
+      let anchor, otsProof;
+      try {
+        const [a, o] = await Promise.all([
+          rfc.stamp(commitmentHash, TSAS, { openssl: OPENSSL }),
+          ots.stamp(commitmentHash, { timeoutMs: 12000 }).catch(e => ({ ok: false, error: e.message }))
+        ]);
+        anchor = a; otsProof = (o && o.ok) ? o : null;
+      } catch (e) { return res.status(502).json({ error: 'TSA stamping failed: ' + e.message }); }
+      const genTime = Math.max.apply(null, anchor.tokens.map(t => t.genTime));
+      if (delay === 0) round = drand.roundAt(genTime) + 1;
+      const roundTime = drand.timeOfRound(round);
+      if (genTime >= roundTime) return res.status(500).json({ error: 'stamp landed at/after target round — retry' + (delay ? ' with a larger delaySeconds' : '') });
+      const sessionId = crypto.randomBytes(8).toString('hex');
+      const rulesAttestation = { drawId, rulesHash: rulesRec.rulesHash, openedAt: rulesRec.openedAt, anchor: rulesRec.rulesAnchor, ots: rulesRec.ots || null };
+      await store.putPending(sessionId, { serverSeed, commitment, round, roundTime, genTime, roundRule, participants,
+        rules: { prizePool }, model: 'tickets', label: rulesRec.label, drawId, rulesAttestation, commitmentHash, anchor, ots: otsProof });
+      res.json({ sessionId, drawId, commitment, round, roundTime, roundRule, delaySeconds: delay, commitmentHash,
+        commitmentAnchor: anchor, ots: otsProof, label: rulesRec.label, rulesAttestation });
+    } catch (e) { res.status(500).json({ error: e.message }); }
+  });
+
   // Reveal core — reusable by the HTTP handler AND the autonomous ticker.
   // Idempotent: once revealed, the FULL response object is cached on the session and re-served
   // verbatim, never recomputed (a later drand-mirror discrepancy can't change a settled result — B6).
@@ -257,6 +339,10 @@ function mountAnchoredDraws(app, opts) {
       commitmentAnchor: { kind: 'rfc3161', commitmentHash: s.commitmentHash, genTime: commitTime, roundRule: s.roundRule || 'roundAt(genTime)+1',
                           tsa: tokens.map(t => t.tsa).join('+'), tokens, ots: s.ots || null }
     });
+    if (s.drawId) {                                   // §5.5 two-phase: key the public record by the phase-0 drawId + carry the rules attestation
+      record.drawId = s.drawId;
+      record.rulesAttestation = s.rulesAttestation || null;
+    }
     await store.markRevealed(sessionId, s, record);   // persist (pending: idempotency; public: durable trail)
     return { status: 'revealed', record };
   }
@@ -359,7 +445,7 @@ function mountAnchoredDraws(app, opts) {
 
   // Same shape the /draw page polls (BACKEND+'/health') to enable Anchored mode.
   app.get('/health', (req, res) => res.json({
-    ok: true, tsas: TSAS.map(t => t.name), roundRule: 'roundAt(genTime)+1',
+    ok: true, tsas: TSAS.map(t => t.name), roundRule: 'roundAt(genTime)+1', twoPhase: true,
     ots: ots.available(), ca: caState,
     store: store.mode,
     autoReveal: { enabled: true, tickMs: REVEAL_TICK_MS,
