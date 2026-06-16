@@ -331,6 +331,7 @@ function mountAnchoredDraws(app, opts) {
     // The FULL response — byte-identical to what /reveal returned before the autonomy refactor.
     const record = Object.assign({}, dr, {
       serverSeed: s.serverSeed, commitment: s.commitment,
+      participants: s.participants, rules: s.rules,           // self-contained: anyone recomputes from the published record (incl. §6.1 prizePool rule)
       model: s.model || null, label: s.label || null,        // carried so /draws summaries + the record show them
       drand: { beacon: drand.QUICKNET.beacon, chainHash: drand.QUICKNET.chainHash, round: s.round,
                randomness: r.randomness, roundTime: s.roundTime,
