@@ -125,6 +125,22 @@ function summarizeDraw(rec, ts) {
   };
 }
 
+// Public summary of an OPENED draw (uvLs §5.6 anti-draw-shopping). Carries only operator-chosen,
+// non-personal fields (no participants — they don't exist at /open) and the closed/abandoned status.
+function summarizeRules(r) {
+  return {
+    drawId: r.drawId || null,
+    label: r.label || null,
+    prizePool: r.prizePool || null,
+    rulesHash: r.rulesHash || null,
+    openedAt: r.openedAt || null,
+    openedISO: r.openedAt ? new Date(r.openedAt * 1000).toISOString() : null,
+    closedAt: r.closedAt || null,
+    closedISO: r.closedAt ? new Date(r.closedAt * 1000).toISOString() : null,
+    status: r.closedAt ? 'closed' : 'open'
+  };
+}
+
 function makeStore(trailDb) {
   if (!trailDb) {
     return {
@@ -147,6 +163,16 @@ function makeStore(trailDb) {
         return fileBackend.list().filter(s => s.revealed && s.result)
           .sort((a, b) => (b.revealedAt || 0) - (a.revealedAt || 0)).slice(0, limit)
           .map(s => summarizeDraw(s.result, (s.revealedAt || 0) * 1000));
+      },
+      async listRules(limit) {
+        const out = [];
+        try {
+          for (const f of fs.readdirSync(STATE_DIR)) {
+            if (!/^rules-.*\.json$/.test(f)) continue;
+            try { out.push(JSON.parse(fs.readFileSync(path.join(STATE_DIR, f), 'utf8'))); } catch (e) {}
+          }
+        } catch (e) {}
+        return out.sort((a, b) => (b.openedAt || 0) - (a.openedAt || 0)).slice(0, limit).map(summarizeRules);
       }
     };
   }
@@ -164,7 +190,8 @@ function makeStore(trailDb) {
       await trailDb.collection(PENDING_COLL).doc(id).set(rec);                                                                   // keep pending for idempotency; retention deletes later
     },
     async getPublic(drawId) { const d = await trailDb.collection(PUBLIC_COLL).doc(drawId).get(); return d.exists ? d.data() : null; },
-    async listPublic(limit) { const snap = await trailDb.collection(PUBLIC_COLL).orderBy('ts', 'desc').limit(limit).get(); return snap.docs.map(d => { const r = d.data(); return summarizeDraw(r, r.ts || null); }); }
+    async listPublic(limit) { const snap = await trailDb.collection(PUBLIC_COLL).orderBy('ts', 'desc').limit(limit).get(); return snap.docs.map(d => { const r = d.data(); return summarizeDraw(r, r.ts || null); }); },
+    async listRules(limit) { const snap = await trailDb.collection('uvs_draw_rules').orderBy('openedAt', 'desc').limit(limit).get(); return snap.docs.map(d => summarizeRules(d.data())); }
   };
 }
 
@@ -267,6 +294,9 @@ function mountAnchoredDraws(app, opts) {
         return res.status(400).json({ error: 'INVALID: duplicate participant ids — record rejected (uvLs §3.1)' });
       const rulesRec = await store.getRules(drawId);
       if (!rulesRec) return res.status(404).json({ error: 'unknown drawId — call /open first' });
+      // anti-reroll / idempotency (uvLs §5.6): one draw per drawId. A second /close is refused so an
+      // operator can't quietly re-close the same opened draw and keep a spare. Open a new draw to re-run.
+      if (rulesRec.closedAt) return res.status(409).json({ error: 'this drawId is already closed (one draw per drawId — re-roll prevented); open a new draw to run again', closedAt: rulesRec.closedAt, sessionId: rulesRec.sessionId || null });
       const prizePool = rulesRec.prizePool;
       // optional blind cross-check (uvLs §5.6): if the operator declares a sold count, it MUST equal the
       // committed list — enforced HERE on the server, not just on the page (a direct POST can't bypass it).
@@ -307,6 +337,7 @@ function mountAnchoredDraws(app, opts) {
       const rulesAttestation = { drawId, rulesHash: rulesRec.rulesHash, openedAt: rulesRec.openedAt, anchor: rulesRec.rulesAnchor, ots: rulesRec.ots || null };
       await store.putPending(sessionId, { serverSeed, commitment, round, roundTime, genTime, roundRule, participants,
         rules: { prizePool }, model: 'tickets', label: rulesRec.label, drawId, declaredCount: decl, rulesAttestation, commitmentHash, anchor, ots: otsProof });
+      try { rulesRec.closedAt = Math.floor(Date.now() / 1000); rulesRec.sessionId = sessionId; await store.putRules(drawId, rulesRec); } catch (e) {}   // mark closed in the open-log (anti-reroll + anti-shopping)
       res.json({ sessionId, drawId, commitment, round, roundTime, roundRule, delaySeconds: delay, commitmentHash,
         commitmentAnchor: anchor, ots: otsProof, label: rulesRec.label, declaredCount: decl, rulesAttestation });
     } catch (e) { res.status(500).json({ error: e.message }); }
@@ -394,6 +425,17 @@ function mountAnchoredDraws(app, opts) {
   app.get('/draws', async (req, res) => {
     try { const items = await store.listPublic(Math.min(parseInt(req.query.limit) || 20, 100)); res.json({ count: items.length, items }); }
     catch (e) { res.status(500).json({ error: e.message }); }
+  });
+
+  // Public ledger of OPENED draws (uvLs §5.6 anti-draw-shopping). Every /open is visible here the
+  // moment it happens; an entry with status:'open' that never becomes 'closed' is a draw that was
+  // started and abandoned. Selective publication (open many, reveal one) becomes a visible anomaly.
+  app.get('/opens', async (req, res) => {
+    try {
+      const items = await store.listRules(Math.min(parseInt(req.query.limit) || 50, 200));
+      res.json({ count: items.length, open: items.filter(i => i.status === 'open').length, closed: items.filter(i => i.status === 'closed').length, items,
+        note: 'Opened draws. status:open with no later close = started-and-abandoned. Compare against /draws (revealed) to spot draws opened but never published.' });
+    } catch (e) { res.status(500).json({ error: e.message }); }
   });
 
   // RFC-3161 notary (+best-effort OTS) for any settled record — honest 🟡 now, OTS matures later.
