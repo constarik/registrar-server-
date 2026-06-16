@@ -260,7 +260,7 @@ function mountAnchoredDraws(app, opts) {
   // by the phase-0 drawId and carries the rules attestation as §5.5 evidence.
   app.post('/close', async (req, res) => {
     try {
-      const { drawId, participants, delaySeconds } = req.body || {};
+      const { drawId, participants, delaySeconds, declaredCount } = req.body || {};
       if (!drawId) return res.status(400).json({ error: 'need drawId (from /open)' });
       if (!Array.isArray(participants)) return res.status(400).json({ error: 'need participants[]' });
       if (new Set(participants).size !== participants.length)
@@ -268,6 +268,14 @@ function mountAnchoredDraws(app, opts) {
       const rulesRec = await store.getRules(drawId);
       if (!rulesRec) return res.status(404).json({ error: 'unknown drawId — call /open first' });
       const prizePool = rulesRec.prizePool;
+      // optional blind cross-check (uvLs §5.6): if the operator declares a sold count, it MUST equal the
+      // committed list — enforced HERE on the server, not just on the page (a direct POST can't bypass it).
+      let decl = null;
+      if (declaredCount != null && declaredCount !== '') {
+        decl = parseInt(declaredCount);
+        if (!Number.isInteger(decl) || decl < 0) return res.status(400).json({ error: 'declaredCount must be a non-negative integer' });
+        if (decl !== participants.length) return res.status(400).json({ error: 'declaredCount does not match the committed participant list size' });
+      }
       let delay = Number(delaySeconds) || 0;
       if (delay > 0) delay = Math.max(MIN_DELAY_S, Math.min(delay, MAX_DELAY_S));
       const serverSeed = crypto.randomBytes(32).toString('hex');
@@ -298,9 +306,9 @@ function mountAnchoredDraws(app, opts) {
       const sessionId = crypto.randomBytes(8).toString('hex');
       const rulesAttestation = { drawId, rulesHash: rulesRec.rulesHash, openedAt: rulesRec.openedAt, anchor: rulesRec.rulesAnchor, ots: rulesRec.ots || null };
       await store.putPending(sessionId, { serverSeed, commitment, round, roundTime, genTime, roundRule, participants,
-        rules: { prizePool }, model: 'tickets', label: rulesRec.label, drawId, rulesAttestation, commitmentHash, anchor, ots: otsProof });
+        rules: { prizePool }, model: 'tickets', label: rulesRec.label, drawId, declaredCount: decl, rulesAttestation, commitmentHash, anchor, ots: otsProof });
       res.json({ sessionId, drawId, commitment, round, roundTime, roundRule, delaySeconds: delay, commitmentHash,
-        commitmentAnchor: anchor, ots: otsProof, label: rulesRec.label, rulesAttestation });
+        commitmentAnchor: anchor, ots: otsProof, label: rulesRec.label, declaredCount: decl, rulesAttestation });
     } catch (e) { res.status(500).json({ error: e.message }); }
   });
 
@@ -343,6 +351,7 @@ function mountAnchoredDraws(app, opts) {
     if (s.drawId) {                                   // §5.5 two-phase: key the public record by the phase-0 drawId + carry the rules attestation
       record.drawId = s.drawId;
       record.rulesAttestation = s.rulesAttestation || null;
+      if (s.declaredCount != null) record.declaredCount = s.declaredCount;   // §5.6: the operator's own declared sold-count, pinned in the public record
     }
     await store.markRevealed(sessionId, s, record);   // persist (pending: idempotency; public: durable trail)
     return { status: 'revealed', record };
