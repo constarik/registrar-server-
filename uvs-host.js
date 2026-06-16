@@ -184,7 +184,7 @@ function createHost(cfg) {
         return { ok: false, error: 'INVALID: duplicate participant ids — record rejected (uvLs §3.1)' };
       const D = g.draw;
       const combinedSeed = D.combinedSeed(body.serverSeed, body.drand.randomness);
-      const prizes = D.poolOf(body.rules || {});
+      const prizes = D.poolOf(body.rules || {}, body.participants.length);   // §6.1: resolve proportional tiers against M
       const result = D.allocate(body.participants, combinedSeed, prizes);
       const commitment = body.commitment || sha256(body.serverSeed);
       // tier DERIVED, not claimed: outcome-bound iff the drand round publishes AFTER the commit
@@ -260,7 +260,7 @@ function createHost(cfg) {
       if (!record || !record.serverSeed || !record.drand || participants == null)
         return { ok: false, error: 'record needs serverSeed, drand.randomness, participants' };
       const combinedSeed = D.combinedSeed(record.serverSeed, record.drand.randomness);
-      const prizes = D.poolOf(record.rules || {});
+      const prizes = D.poolOf(record.rules || {}, participants.length);   // §6.1: resolve proportional tiers against M
       const result = D.allocate(participants, combinedSeed, prizes);
       const norm = (r) => JSON.stringify((r || []).map(x => [x.rank, x.id, x.prize]));
       const ok = combinedSeed === record.combinedSeed && norm(result) === norm(record.result);

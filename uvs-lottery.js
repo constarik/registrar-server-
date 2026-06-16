@@ -61,15 +61,45 @@ function makeLottery(opts) {
     const rank = higher + 1;
     return { id, present, rank, prize: present && rank <= prizes.length ? prizes[rank - 1] : null, score: me };
   }
-  // build the prize pool from rules: explicit prizes[], or prizePool[{tier,key,count}], or {winners,prizeLabel}
-  function poolOf(rules) {
+  // §6.1 proportional resolution — a tier's count as an integer num/den of the participant count M,
+  // one rounding mode. All-integer (BigInt) so it matches the JS/Python/Java/C++ reference verifiers
+  // byte-for-byte; operands non-negative ⇒ division is floor.
+  function resolveCount(M, rule) {
+    const num = rule.num, den = rule.den, mode = rule.mode || 'round-half-up';
+    if (!Number.isInteger(num) || !Number.isInteger(den) || !Number.isInteger(M) || den <= 0 || num < 0 || M < 0)
+      throw new Error('INVALID: proportional num/den/M must be non-negative integers with den>0 (uvLs §6.1)');
+    const Mb = BigInt(M), n = BigInt(num), d = BigInt(den);
+    let c;
+    if (mode === 'floor') c = (Mb * n) / d;
+    else if (mode === 'ceil') c = (Mb * n + d - 1n) / d;
+    else if (mode === 'round-half-up') c = (2n * Mb * n + d) / (2n * d);
+    else throw new Error('INVALID: unknown rounding mode "' + mode + '" (uvLs §6.1)');
+    return Number(c);
+  }
+
+  // build the prize pool from rules: explicit prizes[]; prizePool[{tier,key,count|rule}] (a §6.1 rule
+  // resolves against M = participant count, clamped so the running total never exceeds M); or {winners,prizeLabel}
+  function poolOf(rules, M) {
     rules = rules || {};
     if (Array.isArray(rules.prizes)) return rules.prizes.slice();
     if (Array.isArray(rules.prizePool)) {
+      M = (typeof M === 'number') ? M : 0;
       const out = [];
+      let total = 0;
       for (const e of rules.prizePool) {
         const label = e.key || e.tier || 'WIN';
-        for (let i = 0; i < (e.count || 0); i++) out.push(label);
+        let count;
+        if (e.rule) {
+          count = resolveCount(M, e.rule);
+          if (e.count != null && e.count !== count)
+            throw new Error('INVALID: tier "' + label + '" count ' + e.count + ' != rule-resolved ' + count + ' (uvLs §6.1)');
+        } else {
+          count = e.count || 0;
+        }
+        if (M && total + count > M) count = M - total;   // §6.1 ordering: clamp running total to M
+        if (count < 0) count = 0;
+        for (let i = 0; i < count; i++) out.push(label);
+        total += count;
       }
       return out;
     }
