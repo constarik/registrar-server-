@@ -91,7 +91,7 @@ const fileBackend = {
   del(id) { try { fs.unlinkSync(path.join(STATE_DIR, id + '.json')); } catch (e) {} },
   list() {
     let names;
-    try { names = fs.readdirSync(STATE_DIR).filter(n => n.endsWith('.json') && !n.startsWith('rules-')); } catch (e) { return []; }
+    try { names = fs.readdirSync(STATE_DIR).filter(n => n.endsWith('.json') && !n.startsWith('rules-') && !n.startsWith('gacha-')); } catch (e) { return []; }
     const out = [];
     for (const n of names) {
       try { out.push(Object.assign({ sessionId: n.slice(0, -5) }, JSON.parse(fs.readFileSync(path.join(STATE_DIR, n), 'utf8')))); }
@@ -179,7 +179,9 @@ function makeStore(trailDb) {
           }
         } catch (e) {}
         return out.sort((a, b) => (b.openedAt || 0) - (a.openedAt || 0)).slice(0, limit).map(summarizeRules);
-      }
+      },
+      async putGacha(id, rec) { try { fs.writeFileSync(path.join(STATE_DIR, 'gacha-' + id + '.json'), JSON.stringify(rec)); } catch (e) {} },
+      async getGacha(id) { try { return JSON.parse(fs.readFileSync(path.join(STATE_DIR, 'gacha-' + id + '.json'), 'utf8')); } catch (e) { return null; } }
     };
   }
   return {
@@ -197,10 +199,13 @@ function makeStore(trailDb) {
     },
     async getPublic(drawId) { const d = await trailDb.collection(PUBLIC_COLL).doc(drawId).get(); return d.exists ? d.data() : null; },
     async listPublic(limit) { const snap = await trailDb.collection(PUBLIC_COLL).orderBy('ts', 'desc').limit(limit).get(); return snap.docs.map(d => { const r = d.data(); return summarizeDraw(r, r.ts || null); }); },
-    async listRules(limit) { const snap = await trailDb.collection('uvs_draw_rules').orderBy('openedAt', 'desc').limit(limit).get(); return snap.docs.map(d => summarizeRules(d.data())); }
+    async listRules(limit) { const snap = await trailDb.collection('uvs_draw_rules').orderBy('openedAt', 'desc').limit(limit).get(); return snap.docs.map(d => summarizeRules(d.data())); },
+    async putGacha(id, rec) { await trailDb.collection('uvs_gacha').doc(id).set(rec); },
+    async getGacha(id) { const d = await trailDb.collection('uvs_gacha').doc(id).get(); return d.exists ? d.data() : null; }
   };
 }
 
+const gachaResolver = require('./gacha-resolve');
 function mountAnchoredDraws(app, opts) {
   opts = opts || {};
   const store = makeStore(opts.trailEnabled && opts.trailDb ? opts.trailDb : null);
@@ -479,6 +484,50 @@ function mountAnchoredDraws(app, opts) {
       rulesRec.cancelReason = (typeof reason === 'string' && reason.trim()) ? reason.normalize('NFC').slice(0, 140) : null;
       await store.putRules(drawId, rulesRec);
       res.json({ drawId, status: 'cancelled', cancelledAt: rulesRec.cancelledAt, cancelReason: rulesRec.cancelReason });
+    } catch (e) { res.status(500).json({ error: e.message }); }
+  });
+
+  // ── uvGacha — neutral commit-reveal (honest 🟡). The host commits serverSeed BEFORE it sees the
+  // player's clientSeed, so the operator can't grind a favourable pull sequence; the resolved pulls are
+  // replayable byte-for-byte by the reference resolver (uvGacha §2-§4). Instant pulls are 🟡 by construction
+  // (§6) — no future beacon per pull; the revealed record is notarized at ×2 RFC-3161 for existence-at-time.
+  app.post('/gacha/commit', async (req, res) => {
+    try {
+      const { rules, rateDenominator, pullCount } = req.body || {};
+      const D = rateDenominator;
+      if (!rules || !Array.isArray(rules.tiers)) return res.status(400).json({ error: 'need rules.tiers[]' });
+      try { gachaResolver.validateRules(rules, D); } catch (e) { return res.status(400).json({ error: e.message }); }
+      const n = parseInt(pullCount);
+      if (!Number.isInteger(n) || n < 1 || n > 1000) return res.status(400).json({ error: 'pullCount must be an integer 1..1000' });
+      const serverSeed = crypto.randomBytes(32).toString('hex');
+      const commitment = sha256(serverSeed);
+      const sessionId = crypto.randomBytes(8).toString('hex');
+      await store.putGacha(sessionId, { serverSeed, commitment, rateDenominator: D, rules, pullCount: n, committedAt: Math.floor(Date.now() / 1000), revealed: false });
+      res.json({ sessionId, commitment, rateDenominator: D, rules, pullCount: n,
+        note: 'uvGacha commit-reveal: serverSeed committed (kept private). POST clientSeed to /gacha/reveal to resolve + reveal.' });
+    } catch (e) { res.status(500).json({ error: e.message }); }
+  });
+
+  app.post('/gacha/reveal', async (req, res) => {
+    try {
+      const { sessionId, clientSeed } = req.body || {};
+      if (!sessionId) return res.status(400).json({ error: 'need sessionId (from /gacha/commit)' });
+      const s = await store.getGacha(sessionId);
+      if (!s) return res.status(404).json({ error: 'unknown sessionId — call /gacha/commit first' });
+      if (s.revealed && s.record) return res.json(s.record);                                  // idempotent
+      if (typeof clientSeed !== 'string' || !clientSeed.trim()) return res.status(400).json({ error: 'need clientSeed (non-empty string)' });
+      const rec = { branch: 'uvGacha', commitment: s.commitment, serverSeed: s.serverSeed, clientSeed: clientSeed.trim(),
+        rateDenominator: s.rateDenominator, rules: s.rules, pullCount: s.pullCount, results: [] };
+      const r = gachaResolver.resolve(rec);
+      rec.combinedSeed = r.combined; rec.results = r.results; rec.tier = 'yellow';
+      try {                                                                                   // 🟡 notary (existence-at-time), best-effort
+        const recordHash = sha256(UVSCore.canonicalJSON(rec));
+        const a = await rfc.stamp(recordHash, TSAS, { openssl: OPENSSL });
+        rec.recordHash = recordHash;
+        rec.notary = { kind: 'rfc3161', tsa: a.tokens.map(t => t.tsa).join('+'), tokens: a.tokens };
+      } catch (e) { rec.notary = null; }
+      await store.putGacha(sessionId, Object.assign({}, s, { revealed: true, record: rec, revealedAt: Math.floor(Date.now() / 1000) }));
+      res.json(rec);
     } catch (e) { res.status(500).json({ error: e.message }); }
   });
 
