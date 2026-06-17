@@ -135,6 +135,8 @@ function summarizeRules(r) {
     rulesHash: r.rulesHash || null,
     closeBy: r.closeBy || null,
     closeByISO: r.closeBy ? new Date(r.closeBy * 1000).toISOString() : null,
+    openEnded: r.openEnded || false,
+    closeCondition: r.closeCondition || null,
     openedAt: r.openedAt || null,
     openedISO: r.openedAt ? new Date(r.openedAt * 1000).toISOString() : null,
     closedAt: r.closedAt || null,
@@ -263,20 +265,30 @@ function mountAnchoredDraws(app, opts) {
   // with the final participants. (Closed-list operators just call /open then /close immediately.)
   app.post('/open', async (req, res) => {
     try {
-      const { prizePool, rules, label, closeBy } = req.body || {};
+      const { prizePool, rules, label, closeBy, openEnded, closeCondition } = req.body || {};
       const pool = prizePool || (rules && rules.prizePool) || rules;
       if (!pool) return res.status(400).json({ error: 'need prizePool' });
       const cleanLabel = (typeof label === 'string' && label.trim()) ? label.normalize('NFC').slice(0, 80) : null;
-      // optional close-by deadline (uvLs §5.6): a committed promise to close by a time. Hashed into the rules
-      // (when present) so it's stamped, and printed on the ticket. Overdue-and-not-closed is then a datestamped
-      // broken promise, not a soft guess.
-      let closeByTs = null;
+      // The operator MUST make the closing terms an explicit, stamped promise (uvLs §5.6): either a closeBy
+      // DEADLINE, or an explicit OPEN-ENDED flag (optionally with a human close condition, e.g. "when 1000
+      // tickets are sold"). Forbidding silence is the point — no quiet abandonment. Whichever is given is
+      // hashed into the rules, so it's timestamped and printed on the ticket.
+      let closeByTs = null, isOpenEnded = false, cond = null;
+      const wantsOpenEnded = (openEnded === true || openEnded === 'true');
       if (closeBy != null && closeBy !== '') {
+        if (wantsOpenEnded) return res.status(400).json({ error: 'declare EITHER a closeBy deadline OR open-ended, not both' });
         closeByTs = typeof closeBy === 'number' ? Math.floor(closeBy) : Math.floor(Date.parse(closeBy) / 1000);
         if (!Number.isFinite(closeByTs) || closeByTs <= Math.floor(Date.now() / 1000)) return res.status(400).json({ error: 'closeBy must be a future time (unix seconds or ISO 8601)' });
+      } else if (wantsOpenEnded) {
+        isOpenEnded = true;
+        cond = (typeof closeCondition === 'string' && closeCondition.trim()) ? closeCondition.normalize('NFC').slice(0, 140) : null;
+      } else {
+        return res.status(400).json({ error: 'declare the closing terms: a closeBy deadline, or openEnded:true (optionally with a closeCondition)' });
       }
       const drawId = crypto.randomBytes(8).toString('hex');
-      const ruleObj = closeByTs ? { drawId, prizePool: pool, closeBy: closeByTs } : { drawId, prizePool: pool };
+      const ruleObj = { drawId, prizePool: pool };
+      if (closeByTs) ruleObj.closeBy = closeByTs;
+      if (isOpenEnded) { ruleObj.openEnded = true; if (cond) ruleObj.closeCondition = cond; }
       const rulesHash = sha256(UVSCore.canonicalJSON(ruleObj));
       let anchor, otsProof;
       try {
@@ -288,8 +300,8 @@ function mountAnchoredDraws(app, opts) {
       } catch (e) { return res.status(502).json({ error: 'TSA stamping failed: ' + e.message }); }
       const genTime = Math.max.apply(null, anchor.tokens.map(t => t.genTime));
       const openedAt = Math.floor(Date.now() / 1000);
-      await store.putRules(drawId, { drawId, prizePool: pool, closeBy: closeByTs, label: cleanLabel, rulesHash, rulesAnchor: anchor, ots: otsProof, genTime, openedAt });
-      res.json({ drawId, rulesHash, label: cleanLabel, closeBy: closeByTs, closeByISO: closeByTs ? new Date(closeByTs * 1000).toISOString() : null, openedAt, genTime, rulesAnchor: anchor, ots: otsProof,
+      await store.putRules(drawId, { drawId, prizePool: pool, closeBy: closeByTs, openEnded: isOpenEnded, closeCondition: cond, label: cleanLabel, rulesHash, rulesAnchor: anchor, ots: otsProof, genTime, openedAt });
+      res.json({ drawId, rulesHash, label: cleanLabel, closeBy: closeByTs, closeByISO: closeByTs ? new Date(closeByTs * 1000).toISOString() : null, openEnded: isOpenEnded, closeCondition: cond, openedAt, genTime, rulesAnchor: anchor, ots: otsProof,
         note: '§5.5 Phase 0 — prize rules attested (×2 RFC-3161) before sales. Print drawId on every ticket; call /close with the final participants when sales end.' });
     } catch (e) { res.status(500).json({ error: e.message }); }
   });
