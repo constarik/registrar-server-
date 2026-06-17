@@ -133,11 +133,15 @@ function summarizeRules(r) {
     label: r.label || null,
     prizePool: r.prizePool || null,
     rulesHash: r.rulesHash || null,
+    closeBy: r.closeBy || null,
+    closeByISO: r.closeBy ? new Date(r.closeBy * 1000).toISOString() : null,
     openedAt: r.openedAt || null,
     openedISO: r.openedAt ? new Date(r.openedAt * 1000).toISOString() : null,
     closedAt: r.closedAt || null,
     closedISO: r.closedAt ? new Date(r.closedAt * 1000).toISOString() : null,
-    status: r.closedAt ? 'closed' : 'open'
+    cancelledAt: r.cancelledAt || null,
+    cancelReason: r.cancelReason || null,
+    status: r.cancelledAt ? 'cancelled' : (r.closedAt ? 'closed' : 'open')
   };
 }
 
@@ -259,12 +263,21 @@ function mountAnchoredDraws(app, opts) {
   // with the final participants. (Closed-list operators just call /open then /close immediately.)
   app.post('/open', async (req, res) => {
     try {
-      const { prizePool, rules, label } = req.body || {};
+      const { prizePool, rules, label, closeBy } = req.body || {};
       const pool = prizePool || (rules && rules.prizePool) || rules;
       if (!pool) return res.status(400).json({ error: 'need prizePool' });
       const cleanLabel = (typeof label === 'string' && label.trim()) ? label.normalize('NFC').slice(0, 80) : null;
+      // optional close-by deadline (uvLs §5.6): a committed promise to close by a time. Hashed into the rules
+      // (when present) so it's stamped, and printed on the ticket. Overdue-and-not-closed is then a datestamped
+      // broken promise, not a soft guess.
+      let closeByTs = null;
+      if (closeBy != null && closeBy !== '') {
+        closeByTs = typeof closeBy === 'number' ? Math.floor(closeBy) : Math.floor(Date.parse(closeBy) / 1000);
+        if (!Number.isFinite(closeByTs) || closeByTs <= Math.floor(Date.now() / 1000)) return res.status(400).json({ error: 'closeBy must be a future time (unix seconds or ISO 8601)' });
+      }
       const drawId = crypto.randomBytes(8).toString('hex');
-      const rulesHash = sha256(UVSCore.canonicalJSON({ drawId, prizePool: pool }));
+      const ruleObj = closeByTs ? { drawId, prizePool: pool, closeBy: closeByTs } : { drawId, prizePool: pool };
+      const rulesHash = sha256(UVSCore.canonicalJSON(ruleObj));
       let anchor, otsProof;
       try {
         const [a, o] = await Promise.all([
@@ -275,8 +288,8 @@ function mountAnchoredDraws(app, opts) {
       } catch (e) { return res.status(502).json({ error: 'TSA stamping failed: ' + e.message }); }
       const genTime = Math.max.apply(null, anchor.tokens.map(t => t.genTime));
       const openedAt = Math.floor(Date.now() / 1000);
-      await store.putRules(drawId, { drawId, prizePool: pool, label: cleanLabel, rulesHash, rulesAnchor: anchor, ots: otsProof, genTime, openedAt });
-      res.json({ drawId, rulesHash, label: cleanLabel, openedAt, genTime, rulesAnchor: anchor, ots: otsProof,
+      await store.putRules(drawId, { drawId, prizePool: pool, closeBy: closeByTs, label: cleanLabel, rulesHash, rulesAnchor: anchor, ots: otsProof, genTime, openedAt });
+      res.json({ drawId, rulesHash, label: cleanLabel, closeBy: closeByTs, closeByISO: closeByTs ? new Date(closeByTs * 1000).toISOString() : null, openedAt, genTime, rulesAnchor: anchor, ots: otsProof,
         note: '§5.5 Phase 0 — prize rules attested (×2 RFC-3161) before sales. Print drawId on every ticket; call /close with the final participants when sales end.' });
     } catch (e) { res.status(500).json({ error: e.message }); }
   });
@@ -297,6 +310,7 @@ function mountAnchoredDraws(app, opts) {
       // anti-reroll / idempotency (uvLs §5.6): one draw per drawId. A second /close is refused so an
       // operator can't quietly re-close the same opened draw and keep a spare. Open a new draw to re-run.
       if (rulesRec.closedAt) return res.status(409).json({ error: 'this drawId is already closed (one draw per drawId — re-roll prevented); open a new draw to run again', closedAt: rulesRec.closedAt, sessionId: rulesRec.sessionId || null });
+      if (rulesRec.cancelledAt) return res.status(409).json({ error: 'this draw was cancelled — open a new draw to run again', cancelledAt: rulesRec.cancelledAt });
       const prizePool = rulesRec.prizePool;
       // optional blind cross-check (uvLs §5.6): if the operator declares a sold count, it MUST equal the
       // committed list — enforced HERE on the server, not just on the page (a direct POST can't bypass it).
@@ -435,6 +449,24 @@ function mountAnchoredDraws(app, opts) {
       const items = await store.listRules(Math.min(parseInt(req.query.limit) || 50, 200));
       res.json({ count: items.length, open: items.filter(i => i.status === 'open').length, closed: items.filter(i => i.status === 'closed').length, items,
         note: 'Opened draws. status:open with no later close = started-and-abandoned. Compare against /draws (revealed) to spot draws opened but never published.' });
+    } catch (e) { res.status(500).json({ error: e.message }); }
+  });
+
+  // Explicit, public cancellation (uvLs §5.6). Lets an operator mark an OPEN draw as 'cancelled' so an
+  // honest cancellation is distinguishable from silent abandonment. A completed (closed) draw can't be
+  // cancelled. Idempotent. The real anomaly becomes: open, past its closeBy deadline, and NOT cancelled.
+  app.post('/cancel', async (req, res) => {
+    try {
+      const { drawId, reason } = req.body || {};
+      if (!drawId) return res.status(400).json({ error: 'need drawId' });
+      const rulesRec = await store.getRules(drawId);
+      if (!rulesRec) return res.status(404).json({ error: 'unknown drawId — call /open first' });
+      if (rulesRec.closedAt) return res.status(409).json({ error: 'already closed — a completed draw cannot be cancelled', closedAt: rulesRec.closedAt });
+      if (rulesRec.cancelledAt) return res.json({ drawId, status: 'cancelled', cancelledAt: rulesRec.cancelledAt, cancelReason: rulesRec.cancelReason || null });
+      rulesRec.cancelledAt = Math.floor(Date.now() / 1000);
+      rulesRec.cancelReason = (typeof reason === 'string' && reason.trim()) ? reason.normalize('NFC').slice(0, 140) : null;
+      await store.putRules(drawId, rulesRec);
+      res.json({ drawId, status: 'cancelled', cancelledAt: rulesRec.cancelledAt, cancelReason: rulesRec.cancelReason });
     } catch (e) { res.status(500).json({ error: e.message }); }
   });
 
