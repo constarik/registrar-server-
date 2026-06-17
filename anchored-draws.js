@@ -515,6 +515,24 @@ function mountAnchoredDraws(app, opts) {
       const s = await store.getGacha(sessionId);
       if (!s) return res.status(404).json({ error: 'unknown sessionId — call /gacha/commit first' });
       if (s.revealed && s.record) return res.json(s.record);                                  // idempotent
+      if (s.batch) {                                                                          // 🟢 batch: bound to a FUTURE drand round at commit (uvGacha §6)
+        const now = Math.floor(Date.now() / 1000);
+        if (s.roundTime > now) return res.status(425).json({ error: 'round not published yet', round: s.round, roundTime: s.roundTime });
+        let dr;
+        try { dr = await drand.fetchRound(s.round, { fetch: globalThis.fetch, hashBytes, base: DRAND_BASE || undefined }); }
+        catch (e) { return res.status(502).json({ error: 'drand fetch failed: ' + e.message }); }
+        const grec = { branch: 'uvGacha', commitment: s.commitment, serverSeed: s.serverSeed, clientSeed: s.clientSeed,
+          drand: { beacon: drand.QUICKNET.beacon, chainHash: drand.QUICKNET.chainHash, round: s.round, randomness: dr.randomness, roundTime: s.roundTime,
+                   verifyUrl: 'https://api.drand.sh/' + drand.QUICKNET.chainHash + '/public/' + s.round },
+          rateDenominator: s.rateDenominator, rules: s.rules, pullCount: s.pullCount, results: [] };
+        const rrr = gachaResolver.resolve(grec);
+        grec.combinedSeed = rrr.combined; grec.results = rrr.results; grec.tier = 'green';
+        grec.commitmentHash = s.commitmentHash;
+        grec.commitmentAnchor = { kind: 'rfc3161', commitmentHash: s.commitmentHash, genTime: s.genTime, roundRule: s.roundRule,
+          tsa: s.anchor.tokens.map(t => t.tsa).join('+'), tokens: s.anchor.tokens };
+        await store.putGacha(sessionId, Object.assign({}, s, { revealed: true, record: grec, revealedAt: now }));
+        return res.json(grec);
+      }
       if (typeof clientSeed !== 'string' || !clientSeed.trim()) return res.status(400).json({ error: 'need clientSeed (non-empty string)' });
       const rec = { branch: 'uvGacha', commitment: s.commitment, serverSeed: s.serverSeed, clientSeed: clientSeed.trim(),
         rateDenominator: s.rateDenominator, rules: s.rules, pullCount: s.pullCount, results: [] };
@@ -528,6 +546,49 @@ function mountAnchoredDraws(app, opts) {
       } catch (e) { rec.notary = null; }
       await store.putGacha(sessionId, Object.assign({}, s, { revealed: true, record: rec, revealedAt: Math.floor(Date.now() / 1000) }));
       res.json(rec);
+    } catch (e) { res.status(500).json({ error: e.message }); }
+  });
+
+  // ── uvGacha batch (🟢): the whole pull-session binds to a FUTURE drand round before its randomness exists
+  // (uvGacha §6). clientSeed is fixed now; serverSeed is committed and ×2 RFC-3161-stamped before the round,
+  // so genTime < timeOfRound(R) by construction. Poll /gacha/reveal { sessionId } after roundTime to settle 🟢.
+  app.post('/gacha/commit-batch', async (req, res) => {
+    try {
+      const { rules, rateDenominator, pullCount, clientSeed, delaySeconds } = req.body || {};
+      const D = rateDenominator;
+      if (!rules || !Array.isArray(rules.tiers)) return res.status(400).json({ error: 'need rules.tiers[]' });
+      try { gachaResolver.validateRules(rules, D); } catch (e) { return res.status(400).json({ error: e.message }); }
+      const n = parseInt(pullCount);
+      if (!Number.isInteger(n) || n < 1 || n > 1000) return res.status(400).json({ error: 'pullCount must be an integer 1..1000' });
+      if (typeof clientSeed !== 'string' || !clientSeed.trim()) return res.status(400).json({ error: 'need clientSeed (fixed before the future round)' });
+      const cs = clientSeed.trim();
+      let delay = Number(delaySeconds) || 0;
+      if (delay > 0) delay = Math.max(MIN_DELAY_S, Math.min(delay, MAX_DELAY_S));
+      const serverSeed = crypto.randomBytes(32).toString('hex');
+      const commitment = sha256(serverSeed);
+      const chainHash = drand.QUICKNET.chainHash;
+      let round, roundRule, commitmentRecord;
+      if (delay > 0) {
+        round = drand.roundAt(Math.floor(Date.now() / 1000) + delay) + 1;
+        roundRule = 'explicit-R';
+        commitmentRecord = { rules, rateDenominator: D, pullCount: n, clientSeed: cs, commitment, chainHash, round };
+      } else {
+        roundRule = 'roundAt(genTime)+1';
+        commitmentRecord = { rules, rateDenominator: D, pullCount: n, clientSeed: cs, commitment, chainHash };
+      }
+      const commitmentHash = sha256(UVSCore.canonicalJSON(commitmentRecord));
+      let anchor;
+      try { anchor = await rfc.stamp(commitmentHash, TSAS, { openssl: OPENSSL }); }
+      catch (e) { return res.status(502).json({ error: 'TSA stamping failed: ' + e.message }); }
+      const genTime = Math.max.apply(null, anchor.tokens.map(t => t.genTime));
+      if (delay === 0) round = drand.roundAt(genTime) + 1;
+      const roundTime = drand.timeOfRound(round);
+      if (genTime >= roundTime) return res.status(500).json({ error: 'stamp landed at/after target round — retry' + (delay ? ' with a larger delaySeconds' : '') });
+      const sessionId = crypto.randomBytes(8).toString('hex');
+      await store.putGacha(sessionId, { batch: true, serverSeed, commitment, clientSeed: cs, rateDenominator: D, rules, pullCount: n,
+        round, roundTime, genTime, roundRule, commitmentHash, anchor, committedAt: Math.floor(Date.now() / 1000), revealed: false });
+      res.json({ sessionId, commitment, round, roundTime, roundRule, commitmentHash, commitmentAnchor: anchor,
+        note: 'uvGacha batch (🟢): session bound to a future drand round before its randomness exists. Poll /gacha/reveal { sessionId } after roundTime.' });
     } catch (e) { res.status(500).json({ error: e.message }); }
   });
 
