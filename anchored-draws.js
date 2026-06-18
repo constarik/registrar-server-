@@ -487,22 +487,69 @@ function mountAnchoredDraws(app, opts) {
     } catch (e) { res.status(500).json({ error: e.message }); }
   });
 
+  // ── uvGacha Phase 0: /gacha/open — attest the drop table BEFORE anyone pulls (parity with lottery /open) ──
+  // Fixes { bannerId, rateDenominator, rules(tiers+pity) } and timestamps the rulesHash at ×2 RFC-3161, so the
+  // odds are provably frozen before the first pull (uvGacha §5 input-honesty boundary). Players then pull
+  // against this bannerId; /gacha/commit{,-batch} load the committed rules and cannot swap them.
+  app.post('/gacha/open', async (req, res) => {
+    try {
+      const { rules, rateDenominator, label } = req.body || {};
+      const D = rateDenominator;
+      if (!rules || !Array.isArray(rules.tiers)) return res.status(400).json({ error: 'need rules.tiers[]' });
+      try { gachaResolver.validateRules(rules, D); } catch (e) { return res.status(400).json({ error: e.message }); }
+      const cleanLabel = (typeof label === 'string' && label.trim()) ? label.normalize('NFC').slice(0, 80) : null;
+      const bannerId = crypto.randomBytes(8).toString('hex');
+      const bannerObj = { bannerId, rateDenominator: D, rules };
+      const rulesHash = sha256(UVSCore.canonicalJSON(bannerObj));
+      let anchor, otsProof;
+      try {
+        const [a, o] = await Promise.all([
+          rfc.stamp(rulesHash, TSAS, { openssl: OPENSSL }),
+          ots.stamp(rulesHash, { timeoutMs: 12000 }).catch(e => ({ ok: false, error: e.message }))
+        ]);
+        anchor = a; otsProof = (o && o.ok) ? o : null;
+      } catch (e) { return res.status(502).json({ error: 'TSA stamping failed: ' + e.message }); }
+      const genTime = Math.max.apply(null, anchor.tokens.map(t => t.genTime));
+      const openedAt = Math.floor(Date.now() / 1000);
+      await store.putGacha(bannerId, { kind: 'banner', bannerId, rateDenominator: D, rules, label: cleanLabel, rulesHash, rulesAnchor: anchor, ots: otsProof, genTime, openedAt });
+      res.json({ bannerId, rulesHash, label: cleanLabel, rateDenominator: D, rules, openedAt, genTime, rulesAnchor: anchor, ots: otsProof,
+        note: 'uvGacha Phase 0 — drop table attested (×2 RFC-3161) before any pull. Players pull against this bannerId; the odds are frozen.' });
+    } catch (e) { res.status(500).json({ error: e.message }); }
+  });
+
+  // Public read of a committed banner (odds + attestation), so a player page can show frozen odds read-only.
+  app.get('/gacha/banner/:id', async (req, res) => {
+    try {
+      const b = await store.getGacha(req.params.id);
+      if (!b || b.kind !== 'banner') return res.status(404).json({ error: 'unknown bannerId' });
+      res.json({ bannerId: b.bannerId, label: b.label || null, rateDenominator: b.rateDenominator, rules: b.rules,
+        rulesHash: b.rulesHash, openedAt: b.openedAt, genTime: b.genTime,
+        rulesAnchor: b.rulesAnchor ? { kind: 'rfc3161', tsa: b.rulesAnchor.tokens.map(t => t.tsa).join('+'), tokens: b.rulesAnchor.tokens } : null });
+    } catch (e) { res.status(500).json({ error: e.message }); }
+  });
+
   // ── uvGacha — neutral commit-reveal (honest 🟡). The host commits serverSeed BEFORE it sees the
   // player's clientSeed, so the operator can't grind a favourable pull sequence; the resolved pulls are
   // replayable byte-for-byte by the reference resolver (uvGacha §2-§4). Instant pulls are 🟡 by construction
   // (§6) — no future beacon per pull; the revealed record is notarized at ×2 RFC-3161 for existence-at-time.
   app.post('/gacha/commit', async (req, res) => {
     try {
-      const { rules, rateDenominator, pullCount } = req.body || {};
-      const D = rateDenominator;
-      if (!rules || !Array.isArray(rules.tiers)) return res.status(400).json({ error: 'need rules.tiers[]' });
+      let { rules, rateDenominator: D, pullCount, bannerId } = req.body || {};
+      let rulesAttestation = null;
+      if (bannerId) {                                                                         // pull against a pre-attested banner (Phase 0): rules are loaded, not supplied
+        const b = await store.getGacha(bannerId);
+        if (!b || b.kind !== 'banner') return res.status(404).json({ error: 'unknown bannerId — call /gacha/open first' });
+        rules = b.rules; D = b.rateDenominator;
+        rulesAttestation = { bannerId, rulesHash: b.rulesHash, genTime: b.genTime, tsa: b.rulesAnchor ? b.rulesAnchor.tokens.map(t => t.tsa).join('+') : null, tokens: b.rulesAnchor ? b.rulesAnchor.tokens : null };
+      }
+      if (!rules || !Array.isArray(rules.tiers)) return res.status(400).json({ error: 'need rules.tiers[] (or a bannerId from /gacha/open)' });
       try { gachaResolver.validateRules(rules, D); } catch (e) { return res.status(400).json({ error: e.message }); }
       const n = parseInt(pullCount);
       if (!Number.isInteger(n) || n < 1 || n > 1000) return res.status(400).json({ error: 'pullCount must be an integer 1..1000' });
       const serverSeed = crypto.randomBytes(32).toString('hex');
       const commitment = sha256(serverSeed);
       const sessionId = crypto.randomBytes(8).toString('hex');
-      await store.putGacha(sessionId, { serverSeed, commitment, rateDenominator: D, rules, pullCount: n, committedAt: Math.floor(Date.now() / 1000), revealed: false });
+      await store.putGacha(sessionId, { serverSeed, commitment, rateDenominator: D, rules, pullCount: n, rulesAttestation, committedAt: Math.floor(Date.now() / 1000), revealed: false });
       res.json({ sessionId, commitment, rateDenominator: D, rules, pullCount: n,
         note: 'uvGacha commit-reveal: serverSeed committed (kept private). POST clientSeed to /gacha/reveal to resolve + reveal.' });
     } catch (e) { res.status(500).json({ error: e.message }); }
@@ -514,6 +561,7 @@ function mountAnchoredDraws(app, opts) {
       if (!sessionId) return res.status(400).json({ error: 'need sessionId (from /gacha/commit)' });
       const s = await store.getGacha(sessionId);
       if (!s) return res.status(404).json({ error: 'unknown sessionId — call /gacha/commit first' });
+      if (s.kind === 'banner') return res.status(400).json({ error: 'that is a bannerId, not a pull session — pass it as bannerId to /gacha/commit' });
       if (s.revealed && s.record) return res.json(s.record);                                  // idempotent
       if (s.batch) {                                                                          // 🟢 batch: bound to a FUTURE drand round at commit (uvGacha §6)
         try {
@@ -525,6 +573,7 @@ function mountAnchoredDraws(app, opts) {
       if (typeof clientSeed !== 'string' || !clientSeed.trim()) return res.status(400).json({ error: 'need clientSeed (non-empty string)' });
       const rec = { branch: 'uvGacha', commitment: s.commitment, serverSeed: s.serverSeed, clientSeed: clientSeed.trim(),
         rateDenominator: s.rateDenominator, rules: s.rules, pullCount: s.pullCount, results: [] };
+      if (s.rulesAttestation) rec.rulesAttestation = s.rulesAttestation;
       const r = gachaResolver.resolve(rec);
       rec.combinedSeed = r.combined; rec.results = r.results; rec.tier = 'yellow';
       try {                                                                                   // 🟡 notary (existence-at-time), best-effort
@@ -543,9 +592,15 @@ function mountAnchoredDraws(app, opts) {
   // so genTime < timeOfRound(R) by construction. Poll /gacha/reveal { sessionId } after roundTime to settle 🟢.
   app.post('/gacha/commit-batch', async (req, res) => {
     try {
-      const { rules, rateDenominator, pullCount, clientSeed, delaySeconds } = req.body || {};
-      const D = rateDenominator;
-      if (!rules || !Array.isArray(rules.tiers)) return res.status(400).json({ error: 'need rules.tiers[]' });
+      let { rules, rateDenominator: D, pullCount, clientSeed, delaySeconds, bannerId } = req.body || {};
+      let rulesAttestation = null;
+      if (bannerId) {
+        const b = await store.getGacha(bannerId);
+        if (!b || b.kind !== 'banner') return res.status(404).json({ error: 'unknown bannerId — call /gacha/open first' });
+        rules = b.rules; D = b.rateDenominator;
+        rulesAttestation = { bannerId, rulesHash: b.rulesHash, genTime: b.genTime, tsa: b.rulesAnchor ? b.rulesAnchor.tokens.map(t => t.tsa).join('+') : null, tokens: b.rulesAnchor ? b.rulesAnchor.tokens : null };
+      }
+      if (!rules || !Array.isArray(rules.tiers)) return res.status(400).json({ error: 'need rules.tiers[] (or a bannerId from /gacha/open)' });
       try { gachaResolver.validateRules(rules, D); } catch (e) { return res.status(400).json({ error: e.message }); }
       const n = parseInt(pullCount);
       if (!Number.isInteger(n) || n < 1 || n > 1000) return res.status(400).json({ error: 'pullCount must be an integer 1..1000' });
@@ -574,7 +629,7 @@ function mountAnchoredDraws(app, opts) {
       const roundTime = drand.timeOfRound(round);
       if (genTime >= roundTime) return res.status(500).json({ error: 'stamp landed at/after target round — retry' + (delay ? ' with a larger delaySeconds' : '') });
       const sessionId = crypto.randomBytes(8).toString('hex');
-      await store.putGacha(sessionId, { batch: true, serverSeed, commitment, clientSeed: cs, rateDenominator: D, rules, pullCount: n,
+      await store.putGacha(sessionId, { batch: true, serverSeed, commitment, clientSeed: cs, rateDenominator: D, rules, pullCount: n, rulesAttestation,
         round, roundTime, genTime, roundRule, commitmentHash, anchor, committedAt: Math.floor(Date.now() / 1000), revealed: false });
       res.json({ sessionId, commitment, round, roundTime, roundRule, commitmentHash, commitmentAnchor: anchor,
         note: 'uvGacha batch (🟢): session bound to a future drand round before its randomness exists. Poll /gacha/reveal { sessionId } after roundTime.' });
@@ -594,6 +649,7 @@ function mountAnchoredDraws(app, opts) {
       rateDenominator: s.rateDenominator, rules: s.rules, pullCount: s.pullCount, results: [] };
     const rrr = gachaResolver.resolve(grec);
     grec.combinedSeed = rrr.combined; grec.results = rrr.results; grec.tier = 'green';
+    if (s.rulesAttestation) grec.rulesAttestation = s.rulesAttestation;
     grec.commitmentHash = s.commitmentHash;
     grec.commitmentAnchor = { kind: 'rfc3161', commitmentHash: s.commitmentHash, genTime: s.genTime, roundRule: s.roundRule,
       tsa: s.anchor.tokens.map(t => t.tsa).join('+'), tokens: s.anchor.tokens };
