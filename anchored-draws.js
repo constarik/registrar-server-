@@ -516,22 +516,11 @@ function mountAnchoredDraws(app, opts) {
       if (!s) return res.status(404).json({ error: 'unknown sessionId — call /gacha/commit first' });
       if (s.revealed && s.record) return res.json(s.record);                                  // idempotent
       if (s.batch) {                                                                          // 🟢 batch: bound to a FUTURE drand round at commit (uvGacha §6)
-        const now = Math.floor(Date.now() / 1000);
-        if (s.roundTime > now) return res.status(425).json({ error: 'round not published yet', round: s.round, roundTime: s.roundTime });
-        let dr;
-        try { dr = await drand.fetchRound(s.round, { fetch: globalThis.fetch, hashBytes, base: DRAND_BASE || undefined }); }
-        catch (e) { return res.status(502).json({ error: 'drand fetch failed: ' + e.message }); }
-        const grec = { branch: 'uvGacha', commitment: s.commitment, serverSeed: s.serverSeed, clientSeed: s.clientSeed,
-          drand: { beacon: drand.QUICKNET.beacon, chainHash: drand.QUICKNET.chainHash, round: s.round, randomness: dr.randomness, roundTime: s.roundTime,
-                   verifyUrl: 'https://api.drand.sh/' + drand.QUICKNET.chainHash + '/public/' + s.round },
-          rateDenominator: s.rateDenominator, rules: s.rules, pullCount: s.pullCount, results: [] };
-        const rrr = gachaResolver.resolve(grec);
-        grec.combinedSeed = rrr.combined; grec.results = rrr.results; grec.tier = 'green';
-        grec.commitmentHash = s.commitmentHash;
-        grec.commitmentAnchor = { kind: 'rfc3161', commitmentHash: s.commitmentHash, genTime: s.genTime, roundRule: s.roundRule,
-          tsa: s.anchor.tokens.map(t => t.tsa).join('+'), tokens: s.anchor.tokens };
-        await store.putGacha(sessionId, Object.assign({}, s, { revealed: true, record: grec, revealedAt: now }));
-        return res.json(grec);
+        try {
+          const out = await settleGachaBatch(sessionId, s);
+          if (out.tooEarly) return res.status(425).json({ error: 'round not published yet', round: out.round, roundTime: out.roundTime });
+          return res.json(out.record);
+        } catch (e) { return res.status(502).json({ error: 'drand fetch failed: ' + e.message }); }
       }
       if (typeof clientSeed !== 'string' || !clientSeed.trim()) return res.status(400).json({ error: 'need clientSeed (non-empty string)' });
       const rec = { branch: 'uvGacha', commitment: s.commitment, serverSeed: s.serverSeed, clientSeed: clientSeed.trim(),
@@ -589,6 +578,45 @@ function mountAnchoredDraws(app, opts) {
         round, roundTime, genTime, roundRule, commitmentHash, anchor, committedAt: Math.floor(Date.now() / 1000), revealed: false });
       res.json({ sessionId, commitment, round, roundTime, roundRule, commitmentHash, commitmentAnchor: anchor,
         note: 'uvGacha batch (🟢): session bound to a future drand round before its randomness exists. Poll /gacha/reveal { sessionId } after roundTime.' });
+    } catch (e) { res.status(500).json({ error: e.message }); }
+  });
+
+  // Settle a 🟢 batch once its round has published: fetch drand, resolve, persist + return the record.
+  // Shared by POST /gacha/reveal and the public GET so the logic lives in one place. Throws on drand failure.
+  async function settleGachaBatch(sessionId, s) {
+    const now = Math.floor(Date.now() / 1000);
+    if (s.roundTime > now) return { tooEarly: true, round: s.round, roundTime: s.roundTime };
+    if (s.revealed && s.record) return { record: s.record };
+    const dr = await drand.fetchRound(s.round, { fetch: globalThis.fetch, hashBytes, base: DRAND_BASE || undefined });
+    const grec = { branch: 'uvGacha', commitment: s.commitment, serverSeed: s.serverSeed, clientSeed: s.clientSeed,
+      drand: { beacon: drand.QUICKNET.beacon, chainHash: drand.QUICKNET.chainHash, round: s.round, randomness: dr.randomness, roundTime: s.roundTime,
+               verifyUrl: 'https://api.drand.sh/' + drand.QUICKNET.chainHash + '/public/' + s.round },
+      rateDenominator: s.rateDenominator, rules: s.rules, pullCount: s.pullCount, results: [] };
+    const rrr = gachaResolver.resolve(grec);
+    grec.combinedSeed = rrr.combined; grec.results = rrr.results; grec.tier = 'green';
+    grec.commitmentHash = s.commitmentHash;
+    grec.commitmentAnchor = { kind: 'rfc3161', commitmentHash: s.commitmentHash, genTime: s.genTime, roundRule: s.roundRule,
+      tsa: s.anchor.tokens.map(t => t.tsa).join('+'), tokens: s.anchor.tokens };
+    await store.putGacha(sessionId, Object.assign({}, s, { revealed: true, record: grec, revealedAt: now }));
+    return { record: grec };
+  }
+
+  // Public read of a settled gacha session by id (the gacha analogue of GET /draws/:drawId). Anyone can
+  // fetch the record and replay it. A due-but-unsettled 🟢 batch is settled on read; an instant pull that
+  // the player hasn't revealed yet has no record to show (it needs their clientSeed via POST /gacha/reveal).
+  app.get('/gacha/:sessionId', async (req, res) => {
+    try {
+      const s = await store.getGacha(req.params.sessionId);
+      if (!s) return res.status(404).json({ error: 'unknown sessionId' });
+      if (s.revealed && s.record) return res.json(s.record);
+      if (s.batch) {
+        try {
+          const out = await settleGachaBatch(req.params.sessionId, s);
+          if (out.tooEarly) return res.status(425).json({ error: 'round not published yet', round: out.round, roundTime: out.roundTime });
+          return res.json(out.record);
+        } catch (e) { return res.status(502).json({ error: 'drand fetch failed: ' + e.message }); }
+      }
+      return res.status(409).json({ error: 'session not revealed yet — an instant pull is revealed by the player via POST /gacha/reveal with their clientSeed' });
     } catch (e) { res.status(500).json({ error: e.message }); }
   });
 
