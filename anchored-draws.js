@@ -548,6 +548,7 @@ function mountAnchoredDraws(app, opts) {
       try { gachaResolver.validateRules(rules, D); } catch (e) { return res.status(400).json({ error: e.message }); }
       const n = parseInt(pullCount);
       if (!Number.isInteger(n) || n < 1 || n > 1000) return res.status(400).json({ error: 'pullCount must be an integer 1..1000' });
+      if (n > 100) return res.status(403).json({ error: 'Anonymous demo pulls are capped at 100 per session. Larger sessions need a registered operator identity (in progress) — for a pilot, email constr@gmail.com.' });
       const serverSeed = crypto.randomBytes(32).toString('hex');
       const commitment = sha256(serverSeed);
       const sessionId = crypto.randomBytes(8).toString('hex');
@@ -606,6 +607,7 @@ function mountAnchoredDraws(app, opts) {
       try { gachaResolver.validateRules(rules, D); } catch (e) { return res.status(400).json({ error: e.message }); }
       const n = parseInt(pullCount);
       if (!Number.isInteger(n) || n < 1 || n > 1000) return res.status(400).json({ error: 'pullCount must be an integer 1..1000' });
+      if (n > 100) return res.status(403).json({ error: 'Anonymous demo pulls are capped at 100 per session. Larger sessions need a registered operator identity (in progress) — for a pilot, email constr@gmail.com.' });
       if (typeof clientSeed !== 'string' || !clientSeed.trim()) return res.status(400).json({ error: 'need clientSeed (fixed before the future round)' });
       const cs = clientSeed.trim();
       let delay = Number(delaySeconds) || 0;
