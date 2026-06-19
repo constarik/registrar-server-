@@ -218,6 +218,7 @@ function mountAnchoredDraws(app, opts) {
     try {
       const { participants, rules, model, label, delaySeconds } = req.body || {};
       if (!Array.isArray(participants) || !rules) return res.status(400).json({ error: 'need participants[] and rules' });
+      if (participants.length > 100) return res.status(403).json({ error: 'Anonymous demo draws are capped at 100 entrants. Larger draws need a registered operator identity (in progress) — for a pilot, email constr@gmail.com.' });
       if (new Set(participants).size !== participants.length)
         return res.status(400).json({ error: 'INVALID: duplicate participant ids — record rejected (uvLs §3.1)' });
       // optional human label for navigation — UNTRUSTED display text, NFC-normalized, capped. Not identity.
@@ -320,6 +321,7 @@ function mountAnchoredDraws(app, opts) {
       const { drawId, participants, delaySeconds, declaredCount } = req.body || {};
       if (!drawId) return res.status(400).json({ error: 'need drawId (from /open)' });
       if (!Array.isArray(participants)) return res.status(400).json({ error: 'need participants[]' });
+      if (participants.length > 100) return res.status(403).json({ error: 'Anonymous demo draws are capped at 100 entrants. Larger draws need a registered operator identity (in progress) — for a pilot, email constr@gmail.com.' });
       if (new Set(participants).size !== participants.length)
         return res.status(400).json({ error: 'INVALID: duplicate participant ids — record rejected (uvLs §3.1)' });
       const rulesRec = await store.getRules(drawId);
