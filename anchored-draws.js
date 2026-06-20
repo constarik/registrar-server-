@@ -181,7 +181,8 @@ function makeStore(trailDb) {
         return out.sort((a, b) => (b.openedAt || 0) - (a.openedAt || 0)).slice(0, limit).map(summarizeRules);
       },
       async putGacha(id, rec) { try { fs.writeFileSync(path.join(STATE_DIR, 'gacha-' + id + '.json'), JSON.stringify(rec)); } catch (e) {} },
-      async getGacha(id) { try { return JSON.parse(fs.readFileSync(path.join(STATE_DIR, 'gacha-' + id + '.json'), 'utf8')); } catch (e) { return null; } }
+      async getGacha(id) { try { return JSON.parse(fs.readFileSync(path.join(STATE_DIR, 'gacha-' + id + '.json'), 'utf8')); } catch (e) { return null; } },
+      async listGacha() { const out = []; try { for (const f of fs.readdirSync(STATE_DIR)) { const m = /^gacha-(.*)\.json$/.exec(f); if (!m) continue; try { out.push(Object.assign({ _id: m[1] }, JSON.parse(fs.readFileSync(path.join(STATE_DIR, f), 'utf8')))); } catch (e) {} } } catch (e) {} return out; }
     };
   }
   return {
@@ -201,7 +202,8 @@ function makeStore(trailDb) {
     async listPublic(limit) { const snap = await trailDb.collection(PUBLIC_COLL).orderBy('ts', 'desc').limit(limit).get(); return snap.docs.map(d => { const r = d.data(); return summarizeDraw(r, r.ts || null); }); },
     async listRules(limit) { const snap = await trailDb.collection('uvs_draw_rules').orderBy('openedAt', 'desc').limit(limit).get(); return snap.docs.map(d => summarizeRules(d.data())); },
     async putGacha(id, rec) { await trailDb.collection('uvs_gacha').doc(id).set(rec); },
-    async getGacha(id) { const d = await trailDb.collection('uvs_gacha').doc(id).get(); return d.exists ? d.data() : null; }
+    async getGacha(id) { const d = await trailDb.collection('uvs_gacha').doc(id).get(); return d.exists ? d.data() : null; },
+    async listGacha() { const snap = await trailDb.collection('uvs_gacha').get(); return snap.docs.map(d => Object.assign({ _id: d.id }, d.data())); }
   };
 }
 
@@ -677,6 +679,32 @@ function mountAnchoredDraws(app, opts) {
         } catch (e) { return res.status(502).json({ error: 'drand fetch failed: ' + e.message }); }
       }
       return res.status(409).json({ error: 'session not revealed yet — an instant pull is revealed by the player via POST /gacha/reveal with their clientSeed' });
+    } catch (e) { res.status(500).json({ error: e.message }); }
+  });
+
+  // Public list of REVEALED gacha pull-sessions (the gacha twin of /draws).
+  app.get('/gacha-records', async (req, res) => {
+    try {
+      const lim = Math.min(parseInt(req.query.limit) || 100, 200);
+      const all = await store.listGacha();
+      const items = all.filter(g => g.kind !== 'banner' && g.revealed && g.record)
+        .map(g => ({ sessionId: g._id, tier: g.record.tier || null, pullCount: g.record.pullCount || (g.record.results || []).length,
+                     bannerId: (g.record.rulesAttestation && g.record.rulesAttestation.bannerId) || null, ts: g.revealedAt || g.committedAt || null }))
+        .sort((a, b) => (b.ts || 0) - (a.ts || 0)).slice(0, lim);
+      res.json({ count: items.length, items });
+    } catch (e) { res.status(500).json({ error: e.message }); }
+  });
+
+  // Public list of attested BANNERS (the gacha twin of /opens — drop tables published before pulls).
+  app.get('/gacha-banners', async (req, res) => {
+    try {
+      const lim = Math.min(parseInt(req.query.limit) || 100, 200);
+      const all = await store.listGacha();
+      const items = all.filter(g => g.kind === 'banner')
+        .map(g => ({ bannerId: g.bannerId, label: g.label || null, rateDenominator: g.rateDenominator,
+                     tiers: (g.rules && g.rules.tiers || []).length, rulesHash: g.rulesHash, openedAt: g.openedAt || null }))
+        .sort((a, b) => (b.openedAt || 0) - (a.openedAt || 0)).slice(0, lim);
+      res.json({ count: items.length, items });
     } catch (e) { res.status(500).json({ error: e.message }); }
   });
 
